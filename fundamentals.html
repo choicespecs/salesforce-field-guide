@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Platform fundamentals — Salesforce Field Guide</title>
+<meta name="description" content="How the Salesforce platform works: multi-tenancy, metadata, orgs and editions, sandboxes and scratch orgs, record IDs, My Domain, releases and API versions.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="fundamentals">
+<main class="content">
+<h1>Platform fundamentals</h1>
+<p class="lede">The handful of ideas that explain most of Salesforce's behaviour, including the parts that surprise developers coming from ordinary web stacks.</p>
+
+<h2>Multi-tenancy</h2>
+<p>Salesforce runs thousands of customers on shared infrastructure. Each customer's slice is an <b>org</b> (organisation): its own data, configuration, users and code, isolated logically rather than physically. Orgs live on <b>instances</b> (server pods with names like <code>NA224</code> or <code>EU46</code>) in Salesforce's data centres or on Hyperforce, its public-cloud infrastructure.</p>
+<p>Because tenants share CPU, memory and database capacity, the platform enforces <b>governor limits</b>: hard caps per transaction (100 SOQL queries, 150 DML statements, 10 seconds of CPU…) and per org per day (API calls, async jobs, emails). Limits are the single biggest difference between Salesforce development and general web development. See <a href="limits.html">Governor limits</a>.</p>
+<div class="callout"><b>Consequence:</b> code that works for one record can fail for 200. Everything on the platform, including Flow, must be written for batches of records.</div>
+
+<h2>Everything is metadata</h2>
+<p>An object, a field, a page layout, a flow, an Apex class, a permission set and a report are all <b>metadata</b>: XML descriptions the platform reads at runtime. Creating a custom field in Setup doesn't run a database migration you control; it writes metadata, and the platform adapts.</p>
+<ul>
+  <li>Metadata can be <b>retrieved</b> to files, stored in Git and <b>deployed</b> to another org — that's how changes move from sandbox to production (<a href="devops.html">DevOps</a>).</li>
+  <li><b>Data</b> (records) and <b>metadata</b> (configuration) move separately. Deploying a picklist doesn't move the records that use it.</li>
+  <li>Some settings are data-like but deployable: <b>Custom Metadata Types</b> (<code>__mdt</code>) let you ship configuration rows with your code.</li>
+</ul>
+<script type="text/plain" data-lang="xml" data-title="force-app/main/default/objects/Invoice__c/fields/Amount__c.field-meta.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Amount__c</fullName>
+    <label>Amount</label>
+    <type>Currency</type>
+    <precision>16</precision>
+    <scale>2</scale>
+    <required>false</required>
+    <trackHistory>true</trackHistory>
+</CustomField>
+</script>
+<p>That file is exactly what Setup creates when you add a Currency field called Amount. Clicks and code are two editors for the same metadata.</p>
+
+<h2>Orgs, editions and licences</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Edition</th><th>Who uses it</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Developer Edition</td><td>Learning, prototyping, ISV development</td><td>Free, permanent, small data and user limits. Not connected to any company.</td></tr>
+<tr><td>Starter / Pro Suite</td><td>Small businesses</td><td>Bundled, simplified editions with limited customisation.</td></tr>
+<tr><td>Professional</td><td>Small to mid-size</td><td>Limited API and automation unless add-ons are purchased.</td></tr>
+<tr><td>Enterprise</td><td>Most companies</td><td>Full API, Apex, sandboxes, profiles and permission sets. The usual baseline.</td></tr>
+<tr><td>Unlimited</td><td>Large companies</td><td>Enterprise plus higher limits, more sandboxes, premier support.</td></tr>
+</tbody></table></div>
+<p>Separately from edition, each <b>user</b> has a <b>user licence</b> (Salesforce, Salesforce Platform, Salesforce Integration, Customer Community, Partner Community…) that sets which objects and features they can ever use, and optional <b>permission set licences</b> for add-on features. A Platform licence user, for example, cannot access Opportunities or Cases regardless of permissions.</p>
+
+<h2>Environments</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Environment</th><th>Contains</th><th>Refresh interval</th><th>Use for</th></tr></thead>
+<tbody>
+<tr><td>Production</td><td>Real users and data</td><td>—</td><td>Running the business. You can't write Apex directly in production; you deploy it.</td></tr>
+<tr><td>Developer sandbox</td><td>Metadata only (small storage)</td><td>1 day</td><td>Individual development</td></tr>
+<tr><td>Developer Pro sandbox</td><td>Metadata only (larger storage)</td><td>1 day</td><td>Development with more test data, integration testing</td></tr>
+<tr><td>Partial Copy sandbox</td><td>Metadata + a sample of data (via a sandbox template)</td><td>5 days</td><td>QA, testing with realistic data</td></tr>
+<tr><td>Full sandbox</td><td>Metadata + all data</td><td>29 days</td><td>UAT, performance testing, staging</td></tr>
+<tr><td>Scratch org</td><td>Built from your source code and a definition file</td><td>Disposable (1–30 days)</td><td>Source-driven development, CI, package development</td></tr>
+</tbody></table></div>
+<p>Sandboxes are copies of production made at refresh time; <b>refreshing wipes the sandbox</b>. Users are copied too, with <code>.sandboxname</code> appended to usernames and email addresses scrambled with <code>.invalid</code> so you don't email real customers. Log in to sandboxes at <code>test.salesforce.com</code> or via the My Domain URL.</p>
+<div class="callout tip"><b>Post-refresh tasks</b> are common: reset integration endpoints, fix user emails, seed test data. Automate them with an Apex class implementing <code>SandboxPostCopy</code>, which runs automatically after a sandbox is created or refreshed.</div>
+<script type="text/plain" data-lang="apex" data-title="SandboxSetup.cls — runs after every refresh">
+global class SandboxSetup implements SandboxPostCopy {
+    global void runApexClass(SandboxContext context) {
+        // context.sandboxName() tells you which sandbox this is, e.g. 'uat'
+        // Org_Switch__c is a hierarchy custom setting; turn outbound integrations off
+        // so a sandbox never calls production systems.
+        insert new Org_Switch__c(SetupOwnerId = UserInfo.getOrganizationId(), Disable_Callouts__c = true);
+
+        // Point integration users at a safe mailbox
+        List<User> integrationUsers = [SELECT Id, Email FROM User WHERE Profile.Name = 'Integration User'];
+        for (User u : integrationUsers) u.Email = 'sandbox-alerts@example.com';
+        update integrationUsers;
+    }
+}
+</script>
+
+<h2>My Domain and URLs</h2>
+<p>Every org has a <b>My Domain</b>, e.g. <code>acme.my.salesforce.com</code>. Sandboxes look like <code>acme--uat.sandbox.my.salesforce.com</code>. You'll see these URL shapes:</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>URL</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td><code>https://acme.my.salesforce.com</code></td><td>Login and API base URL</td></tr>
+<tr><td><code>https://acme.lightning.force.com/lightning/r/Account/001.../view</code></td><td>A record page in Lightning Experience</td></tr>
+<tr><td><code>https://acme.lightning.force.com/lightning/o/Account/list</code></td><td>An object's list view</td></tr>
+<tr><td><code>https://acme.lightning.force.com/lightning/setup/SetupOneHome/home</code></td><td>Setup home</td></tr>
+<tr><td><code>https://acme.my.salesforce.com/services/data/v64.0/</code></td><td>REST API root (version varies)</td></tr>
+<tr><td><code>https://acme.my.site.com</code></td><td>Experience Cloud sites</td></tr>
+</tbody></table></div>
+
+<h2>Record IDs</h2>
+<p>Every record has an <code>Id</code>: 15 characters case-sensitive (shown in URLs and older reports) or 18 characters case-insensitive (returned by APIs and Apex). The first three characters are the <b>key prefix</b> and identify the object.</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Prefix</th><th>Object</th><th>Prefix</th><th>Object</th></tr></thead>
+<tbody>
+<tr><td><code>001</code></td><td>Account</td><td><code>005</code></td><td>User</td></tr>
+<tr><td><code>003</code></td><td>Contact</td><td><code>00G</code></td><td>Group / Queue</td></tr>
+<tr><td><code>006</code></td><td>Opportunity</td><td><code>00e</code></td><td>Profile</td></tr>
+<tr><td><code>00Q</code></td><td>Lead</td><td><code>0PS</code></td><td>Permission Set</td></tr>
+<tr><td><code>500</code></td><td>Case</td><td><code>00T</code> / <code>00U</code></td><td>Task / Event</td></tr>
+<tr><td><code>a00</code>–<code>a0Z</code>…</td><td>Custom objects (assigned per org)</td><td><code>01p</code></td><td>Apex class</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex" data-title="Working with IDs in Apex">
+Id recId = '001000000000001AAA';
+Schema.SObjectType t = recId.getSobjectType();      // Account
+String objName = t.getDescribe().getName();         // 'Account'
+Boolean isAccount = recId.getSobjectType() == Account.SObjectType;
+
+String prefix = Account.SObjectType.getDescribe().getKeyPrefix(); // '001'
+String id18 = String.valueOf(recId);                 // Apex always uses 18-char IDs
+// In formulas: CASESAFEID(Id) converts to 18 characters
+</script>
+<div class="callout warn"><b>Never hardcode IDs.</b> Record IDs differ between sandbox and production (except for records copied in a Full/Partial refresh, which keep the production ID at refresh time). Look records up by <code>DeveloperName</code>, an External ID, or a Custom Metadata record.</div>
+
+<h2>Releases and API versions</h2>
+<p>Salesforce ships three major releases a year — <b>Spring</b> (Feb), <b>Summer</b> (Jun) and <b>Winter</b> (Oct, named for the following year). Sandboxes on preview instances get each release about a month early. Each release adds an <b>API version</b> (Winter '26 was 65.0; each release adds 1.0).</p>
+<ul>
+  <li>Every Apex class, trigger, LWC and flow stores the API version it was saved with. Behaviour is versioned: old code keeps old behaviour until you bump its version.</li>
+  <li>API clients choose a version in the URL: <code>/services/data/v64.0/</code>.</li>
+  <li><b>Release updates</b> (Setup → Release Updates) are behaviour changes with an enforcement date. Test and enable them in a sandbox before they're forced on.</li>
+  <li>Features are retired on published schedules. Workflow Rules and Process Builder reached end of support on 31 December 2025; existing ones still run but get no fixes.</li>
+</ul>
+
+<h2>Lightning Experience vs Classic</h2>
+<p><b>Lightning Experience</b> is the current UI: component-based pages built in Lightning App Builder, LWC, Dynamic Forms. <b>Salesforce Classic</b> is the pre-2016 UI; it still exists and some old orgs and Visualforce pages depend on it, but new features are Lightning-only. When documentation shows two sets of instructions, use the Lightning ones.</p>
+
+<h2>Navigating Setup</h2>
+<p>Gear icon (top right) → <b>Setup</b>. The <b>Quick Find</b> box at the top of the left sidebar is the fastest way anywhere. The places you'll visit most:</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Quick Find term</th><th>What's there</th></tr></thead>
+<tbody>
+<tr><td>Object Manager</td><td>(Top tab, not Quick Find.) Every object's fields, relationships, layouts, record types, validation rules, triggers, buttons.</td></tr>
+<tr><td>Users</td><td>Create, freeze, deactivate users; reset passwords; see a user's permission summary.</td></tr>
+<tr><td>Permission Sets / Permission Set Groups / Profiles</td><td>Access control.</td></tr>
+<tr><td>Sharing Settings</td><td>Org-wide defaults and sharing rules.</td></tr>
+<tr><td>Flows</td><td>All flows, versions, and the Flow Builder.</td></tr>
+<tr><td>Apex Classes / Apex Triggers / Apex Jobs</td><td>Code, and the status of async jobs.</td></tr>
+<tr><td>Debug Logs</td><td>Trace flags for capturing execution logs.</td></tr>
+<tr><td>Deployment Status</td><td>Every deployment, its test results and errors.</td></tr>
+<tr><td>Company Information</td><td>Org ID, edition, licences, storage.</td></tr>
+<tr><td>System Overview</td><td>Usage against key limits (API calls, storage, code).</td></tr>
+<tr><td>View Setup Audit Trail</td><td>Who changed what in Setup in the last 180 days.</td></tr>
+</tbody></table></div>
+
+<h2>Storage</h2>
+<p>Orgs have two storage pools. <b>Data storage</b> counts records (most records count as 2 KB regardless of size). <b>File storage</b> counts files, attachments and documents. Check usage in Setup → Storage Usage. Running out blocks inserts, so archive old records and keep large binaries out of Salesforce when you can.</p>
+</main>
+</body>
+</html>

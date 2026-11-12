@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Platform Events &amp; CDC — Salesforce Field Guide</title>
+<meta name="description" content="Event-driven integration on Salesforce: defining and publishing platform events from Apex, Flow and the API, subscribing with triggers, flows, LWC and the Pub/Sub API, publish behaviour, replay IDs, retries, Change Data Capture and its change event header.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="events">
+<main class="content">
+<h1>Platform Events & Change Data Capture</h1>
+<p class="lede">Events decouple systems: a publisher says "this happened" without knowing who listens. Platform Events carry messages you define; Change Data Capture streams record changes automatically.</p>
+
+<h2>Concepts</h2>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  subgraph Publishers
+    A1[Apex / Flow]
+    A2[External system via API]
+  end
+  subgraph Bus["Salesforce event bus (retained ~72 hours)"]
+    PE["/event/Order_Shipped__e"]
+    CDC["/data/AccountChangeEvent"]
+  end
+  subgraph Subscribers
+    S1["Apex trigger"]
+    S2["Platform event–triggered flow"]
+    S3["LWC (empApi)"]
+    S4["External service (Pub/Sub API)"]
+  end
+  A1 --> PE
+  A2 --> PE
+  DB[(Record changes)] --> CDC
+  PE --> S1 & S2 & S3 & S4
+  CDC --> S1 & S4
+</pre></div>
+<ul>
+<li>Events are <b>retained for 72 hours</b> (high-volume events) and each has a <b>Replay ID</b>, so a subscriber that was offline can resume from where it left off.</li>
+<li>Delivery is <b>at least once</b> and in order per channel — subscribers should be idempotent.</li>
+<li>Events are not records: you can't query or update them, and they don't count toward storage.</li>
+</ul>
+
+<h2>Defining a platform event</h2>
+<p>Setup → Platform Events → New. Name it like an object (<code>Order_Shipped__e</code>), add custom fields (Text, Number, Checkbox, Date/Time, Long Text). Choose the <b>publish behaviour</b>:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Publish behaviour</th><th>Delivered</th><th>Use when</th></tr></thead>
+<tbody>
+<tr><td>Publish After Commit</td><td>Only if the publishing transaction commits</td><td>The event describes data that must exist (most cases)</td></tr>
+<tr><td>Publish Immediately</td><td>Right away, even if the transaction later rolls back</td><td>Logging and error reporting — e.g. log a failure that will cause a rollback</td></tr>
+</tbody></table></div>
+
+<h2>Publishing</h2>
+<script type="text/plain" data-lang="apex" data-title="Apex">
+List<Order_Shipped__e> events = new List<Order_Shipped__e>();
+for (Order__c o : shippedOrders) {
+    events.add(new Order_Shipped__e(
+        Order_Number__c = o.Name,
+        Carrier__c = o.Carrier__c,
+        Shipped_At__c = Datetime.now()));
+}
+List<Database.SaveResult> results = EventBus.publish(events);   // one call for the list
+for (Database.SaveResult r : results) {
+    if (!r.isSuccess()) System.debug(LoggingLevel.ERROR, r.getErrors()[0].getMessage());
+}
+</script>
+<p><b>Flow</b>: a Create Records element on the platform event object publishes it. <b>REST API</b>: insert it like a record:</p>
+<script type="text/plain" data-lang="bash">
+curl -s -H "$AUTH" -H "Content-Type: application/json" -X POST \
+  "$BASE/sobjects/Order_Shipped__e/" -d '{"Order_Number__c":"SO-1001","Carrier__c":"UPS"}'
+</script>
+
+<h2>Subscribing in Salesforce</h2>
+<h3>Apex trigger</h3>
+<script type="text/plain" data-lang="apex" data-title="OrderShippedTrigger.trigger">
+trigger OrderShippedTrigger on Order_Shipped__e (after insert) {   // only after insert
+    Set<String> numbers = new Set<String>();
+    for (Order_Shipped__e e : Trigger.new) numbers.add(e.Order_Number__c);
+
+    List<Order__c> orders = [SELECT Id, Name FROM Order__c WHERE Name IN :numbers];
+    for (Order__c o : orders) o.Status__c = 'Shipped';
+    update orders;
+
+    // Checkpoint: if a later failure retries, resume after the last processed event
+    EventBus.TriggerContext.currentContext().setResumeCheckpoint(
+        Trigger.new[Trigger.new.size() - 1].ReplayId);
+}
+</script>
+<ul>
+<li>Event triggers run in their own transaction as the <b>Automated Process</b> user (configurable with a PlatformEventSubscriberConfig to run as another user and set the batch size).</li>
+<li>Batches can contain up to 2,000 events.</li>
+<li>Throw <code>EventBus.RetryableException</code> to have the batch redelivered (up to 9 retries), e.g. when a lock or external system is temporarily unavailable.</li>
+<li>Monitor subscribers in Setup → Platform Events → the event → Subscriptions (suspend, resume, see the last processed replay ID).</li>
+</ul>
+<h3>Flow</h3>
+<p>A <b>platform event–triggered flow</b> starts once per event message; <code>$Record</code> is the event. Good for simple reactions (create a task, update a record).</p>
+<h3>LWC</h3>
+<script type="text/plain" data-lang="js" data-title="Listen to events in the browser with empApi">
+import { LightningElement } from 'lwc';
+import { subscribe, unsubscribe, onError } from 'lightning/empApi';
+
+export default class ShipmentTicker extends LightningElement {
+    subscription;
+    async connectedCallback() {
+        onError(err => console.error('empApi error', JSON.stringify(err)));
+        this.subscription = await subscribe('/event/Order_Shipped__e', -1, (msg) => {   // -1 = new events only
+            const p = msg.data.payload;
+            this.latest = p.Order_Number__c + ' via ' + p.Carrier__c;
+        });
+    }
+    disconnectedCallback() { unsubscribe(this.subscription); }
+}
+</script>
+
+<h2>Subscribing from outside: Pub/Sub API</h2>
+<p>The <b>Pub/Sub API</b> is a gRPC API (HTTP/2, Avro-encoded payloads) for publishing and subscribing to platform events and CDC from external services. It replaces CometD/Streaming API for new work.</p>
+<ul>
+<li>Topics: <code>/event/Order_Shipped__e</code>, <code>/data/AccountChangeEvent</code>, <code>/data/ChangeEvents</code> (all CDC-enabled objects), or a custom channel <code>/data/My_Channel__chn</code>.</li>
+<li><code>Subscribe</code> is pull-based flow control: the client requests N events at a time.</li>
+<li>Store the last processed <b>replay ID</b> and pass it with <code>ReplayPreset.CUSTOM</code> when reconnecting.</li>
+<li>Fetch the Avro schema with <code>GetSchema</code> using the event's schema ID.</li>
+<li>Salesforce publishes sample clients in Java, Python, Go and Node.js.</li>
+</ul>
+
+<h2>Change Data Capture</h2>
+<p>Setup → Change Data Capture: select objects (standard and custom). Salesforce then publishes a <b>change event</b> for every create, update, delete and undelete: <code>AccountChangeEvent</code>, <code>Invoice__ChangeEvent</code>.</p>
+<h3>The change event header</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>entityName</code></td><td>Object, e.g. <code>Account</code></td></tr>
+<tr><td><code>changeType</code></td><td><code>CREATE</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>UNDELETE</code>, or <code>GAP_*</code> / <code>GAP_OVERFLOW</code> when details aren't available</td></tr>
+<tr><td><code>recordIds</code></td><td>Records affected (several when changes are batched)</td></tr>
+<tr><td><code>changedFields</code></td><td>Fields changed in an update</td></tr>
+<tr><td><code>commitTimestamp</code>, <code>commitNumber</code>, <code>transactionKey</code>, <code>sequenceNumber</code></td><td>Ordering and grouping within a transaction</td></tr>
+<tr><td><code>changeOrigin</code>, <code>commitUser</code></td><td>Which client/user made the change</td></tr>
+</tbody></table></div>
+<p>The event body contains only the fields that changed (plus the header) for updates; all non-null fields for creates.</p>
+<script type="text/plain" data-lang="apex" data-title="CDC trigger: react to account address changes asynchronously">
+trigger AccountChangeTrigger on AccountChangeEvent (after insert) {
+    Set<String> changedIds = new Set<String>();
+    for (AccountChangeEvent e : Trigger.new) {
+        EventBus.ChangeEventHeader h = e.ChangeEventHeader;
+        if (h.changeType != 'UPDATE') continue;
+        for (String f : h.changedFields) {
+            if (f.startsWith('Billing')) { changedIds.addAll(h.recordIds); break; }
+        }
+    }
+    if (!changedIds.isEmpty()) {
+        // e.g. re-geocode or notify an external system
+        System.enqueueJob(new GeocodeJob(changedIds));
+    }
+}
+</script>
+<div class="callout"><b>CDC vs platform events vs triggers:</b> CDC is automatic and ideal for keeping an external copy (data warehouse, search index) in sync. Platform events are for business messages you design ("Order Shipped"). Apex triggers on the object itself are synchronous and part of the saving transaction; CDC triggers run afterwards, separately, so they can't block or alter the save.</div>
+
+<h2>Testing</h2>
+<script type="text/plain" data-lang="apex">
+@IsTest
+static void shippedEventUpdatesOrder() {
+    insert new Order__c(Name = 'SO-1001', Status__c = 'Open');
+    Test.startTest();
+    EventBus.publish(new Order_Shipped__e(Order_Number__c = 'SO-1001'));
+    Test.stopTest();                         // event delivered; trigger runs
+    Assert.areEqual('Shipped', [SELECT Status__c FROM Order__c].Status__c);
+}
+
+@IsTest
+static void cdcTriggerRuns() {
+    Test.enableChangeDataCapture();
+    Account a = new Account(Name = 'Acme');
+    insert a;
+    Test.getEventBus().deliver();            // deliver the CREATE change event
+    a.BillingStreet = '1 Main St';
+    update a;
+    Test.getEventBus().deliver();            // deliver the UPDATE change event
+}
+</script>
+
+<h2>Allocations and monitoring</h2>
+<ul>
+<li>Publishing and delivery have hourly/daily <b>allocations</b> by edition (higher with add-on licences). Check <code>/limits</code> (<code>HourlyPublishedPlatformEvents</code>, <code>DailyDeliveredPlatformEvents</code>, CDC equivalents).</li>
+<li>Delivery to Apex triggers and flows doesn't count against the external delivery allocation.</li>
+<li>Use <b>Event Relays</b> to forward events to Amazon EventBridge without middleware.</li>
+<li><b>Custom channels</b> group events and add filters (<code>PlatformEventChannel</code>, enriched fields for CDC).</li>
+</ul>
+</main>
+</body>
+</html>

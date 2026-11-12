@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SOQL &amp; SOSL — Salesforce Field Guide</title>
+<meta name="description" content="SOQL and SOSL reference with examples: filters and operators, relationship queries, semi-joins and anti-joins, aggregates, date literals and functions, polymorphic TYPEOF, FOR UPDATE, ALL ROWS, user mode, dynamic SOQL, and full-text search.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="soql">
+<main class="content">
+<h1>SOQL & SOSL</h1>
+<p class="lede">SOQL (Salesforce Object Query Language) reads records from one object and its relationships. SOSL (Salesforce Object Search Language) runs full-text search across many objects. Neither supports arbitrary joins or <code>SELECT *</code>.</p>
+
+<h2>Where you run queries</h2>
+<ul>
+<li><b>Apex</b>: inline in square brackets, <code>[SELECT … ]</code>, or dynamically with <code>Database.query</code>.</li>
+<li><b>Developer Console</b> → Query Editor (tick "Use Tooling API" for metadata like ApexClass).</li>
+<li><b>CLI</b>: <code>sf data query --query "SELECT Id, Name FROM Account LIMIT 5"</code> (add <code>--result-format csv</code> or <code>--bulk</code>).</li>
+<li><b>REST API</b>: <code>GET /services/data/v64.0/query?q=SELECT+Id+FROM+Account</code>.</li>
+<li>VS Code's SOQL Builder, Workbench and other tools.</li>
+</ul>
+
+<h2>Syntax</h2>
+<script type="text/plain" data-lang="soql">
+SELECT fieldList [, (subquery)]
+FROM objectType
+[WHERE conditionExpression]
+[WITH USER_MODE | SYSTEM_MODE | SECURITY_ENFORCED]
+[GROUP BY fieldList [HAVING condition]]
+[ORDER BY field [ASC|DESC] [NULLS FIRST|LAST]]
+[LIMIT n] [OFFSET n]
+[FOR UPDATE | FOR VIEW | FOR REFERENCE]
+[ALL ROWS]          -- Apex only: include deleted and archived rows
+</script>
+
+<h2>Filtering</h2>
+<script type="text/plain" data-lang="soql">
+SELECT Id, Name, AnnualRevenue
+FROM Account
+WHERE Industry = 'Technology'                       -- strings in single quotes
+  AND AnnualRevenue >= 1000000                      -- numbers unquoted
+  AND BillingCountry IN ('US', 'CA')
+  AND Name LIKE 'Acme%'                             -- % any chars, _ one char; case-insensitive
+  AND Rating != null
+  AND (Type = 'Customer' OR Type = 'Partner')
+  AND NOT Name LIKE '%test%'
+  AND Industry NOT IN ('Government')
+  AND IsDeleted = false
+  AND CreatedDate > 2026-01-01T00:00:00Z            -- datetimes in ISO 8601 UTC
+  AND Last_Review__c < 2026-06-30                   -- dates: YYYY-MM-DD
+ORDER BY AnnualRevenue DESC NULLS LAST, Name
+LIMIT 100
+</script>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Operator</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>= != &lt; &lt;= &gt; &gt;=</code></td><td><code>= null</code> and <code>!= null</code> work (no <code>IS NULL</code>)</td></tr>
+<tr><td><code>LIKE</code></td><td>Text only; <code>%</code> and <code>_</code> wildcards; leading <code>%</code> can't use indexes</td></tr>
+<tr><td><code>IN</code>, <code>NOT IN</code></td><td>Literal list, bind variable, or subquery (semi-join / anti-join)</td></tr>
+<tr><td><code>INCLUDES</code>, <code>EXCLUDES</code></td><td>Multi-select picklists: <code>Interests__c INCLUDES ('Golf;Tennis', 'Sailing')</code> means (Golf AND Tennis) OR Sailing</td></tr>
+<tr><td><code>DISTANCE(…) &lt; n</code></td><td>Geolocation: <code>DISTANCE(Location__c, GEOLOCATION(37.77,-122.41), 'mi') &lt; 20</code></td></tr>
+</tbody></table></div>
+
+<h2>Relationship queries</h2>
+<h3>Child to parent (dot notation)</h3>
+<script type="text/plain" data-lang="soql">
+SELECT Id, LastName, Account.Name, Account.Owner.Name, Account.Parent.Name
+FROM Contact
+WHERE Account.Industry = 'Healthcare'
+  AND Account.Owner.IsActive = true
+
+-- Custom lookup: use __r
+SELECT Id, Name, Invoice__r.Status__c, Invoice__r.Account__r.Name
+FROM Invoice_Line__c
+</script>
+<p>Up to 5 levels up (<code>A.B.C.D.E.Field</code>), and up to 55 child-to-parent relationships in one query.</p>
+<h3>Parent to children (subquery)</h3>
+<script type="text/plain" data-lang="soql">
+SELECT Id, Name,
+       (SELECT Id, LastName, Email FROM Contacts ORDER BY LastName),
+       (SELECT Id, Amount, StageName FROM Opportunities WHERE IsClosed = false),
+       (SELECT Id FROM Invoices__r)                  -- custom child relationship
+FROM Account
+WHERE Id IN :accountIds
+</script>
+<p>Use the <b>child relationship name</b> (plural: <code>Contacts</code>, <code>Opportunities</code>, <code>Cases</code>, <code>Invoices__r</code>). Up to 20 subqueries per query; nesting up to 5 levels deep in recent API versions.</p>
+<script type="text/plain" data-lang="apex" data-title="Reading subquery results in Apex">
+for (Account a : [SELECT Name, (SELECT LastName FROM Contacts) FROM Account LIMIT 10]) {
+    System.debug(a.Name + ' has ' + a.Contacts.size() + ' contacts');
+    for (Contact c : a.Contacts) System.debug('  ' + c.LastName);
+}
+</script>
+<h3>Semi-joins and anti-joins</h3>
+<script type="text/plain" data-lang="soql">
+-- Accounts with at least one open case
+SELECT Id, Name FROM Account
+WHERE Id IN (SELECT AccountId FROM Case WHERE IsClosed = false)
+
+-- Accounts with no opportunities at all
+SELECT Id, Name FROM Account
+WHERE Id NOT IN (SELECT AccountId FROM Opportunity)
+
+-- Contacts at accounts that have a won deal this year
+SELECT Id, Name FROM Contact
+WHERE AccountId IN (SELECT AccountId FROM Opportunity WHERE IsWon = true AND CloseDate = THIS_YEAR)
+</script>
+
+<h2>Aggregates</h2>
+<script type="text/plain" data-lang="soql">
+SELECT StageName, COUNT(Id) deals, SUM(Amount) total, AVG(Amount) avgDeal, MAX(CloseDate) latest
+FROM Opportunity
+WHERE CloseDate = THIS_FISCAL_YEAR
+GROUP BY StageName
+HAVING SUM(Amount) > 100000
+ORDER BY SUM(Amount) DESC
+
+-- Distinct count
+SELECT COUNT_DISTINCT(AccountId) FROM Opportunity WHERE IsWon = true
+
+-- Subtotals
+SELECT LeadSource, Rating, COUNT(Id) FROM Lead GROUP BY ROLLUP(LeadSource, Rating)
+
+-- Find duplicates
+SELECT Email, COUNT(Id) n FROM Contact WHERE Email != null GROUP BY Email HAVING COUNT(Id) > 1
+</script>
+<script type="text/plain" data-lang="apex" data-title="Aggregates in Apex">
+for (AggregateResult ar : [SELECT OwnerId, SUM(Amount) amt FROM Opportunity
+                           WHERE IsClosed = false GROUP BY OwnerId]) {
+    Id owner = (Id) ar.get('OwnerId');
+    Decimal amt = (Decimal) ar.get('amt');      // alias; unaliased are expr0, expr1…
+}
+Integer openCases = [SELECT COUNT() FROM Case WHERE IsClosed = false];
+</script>
+<p>Aggregate queries still count every row they scan toward the 50,000-row limit, and return at most 2,000 groups.</p>
+
+<h2>Dates</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Literal</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>TODAY</code>, <code>YESTERDAY</code>, <code>TOMORROW</code></td><td>Calendar days in the user's time zone</td></tr>
+<tr><td><code>THIS_WEEK</code>, <code>LAST_WEEK</code>, <code>NEXT_WEEK</code></td><td>Weeks (start day depends on locale)</td></tr>
+<tr><td><code>THIS_MONTH</code>, <code>LAST_MONTH</code>, <code>NEXT_MONTH</code></td><td>Months</td></tr>
+<tr><td><code>THIS_QUARTER</code>, <code>THIS_YEAR</code>, <code>LAST_YEAR</code></td><td>Calendar quarters/years</td></tr>
+<tr><td><code>THIS_FISCAL_QUARTER</code>, <code>LAST_FISCAL_YEAR</code></td><td>Fiscal periods from org settings</td></tr>
+<tr><td><code>LAST_N_DAYS:30</code>, <code>NEXT_N_DAYS:7</code></td><td>Rolling ranges (LAST_N_DAYS includes today)</td></tr>
+<tr><td><code>N_DAYS_AGO:90</code>, <code>LAST_N_MONTHS:6</code>, <code>NEXT_N_QUARTERS:2</code></td><td>More rolling forms</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="soql">
+SELECT Id FROM Case WHERE CreatedDate = LAST_N_DAYS:7
+SELECT Id FROM Opportunity WHERE CloseDate = NEXT_QUARTER
+SELECT Id FROM Task WHERE ActivityDate < TODAY AND IsClosed = false     -- overdue tasks
+
+-- Date functions for grouping
+SELECT CALENDAR_YEAR(CreatedDate) y, CALENDAR_MONTH(CreatedDate) m, COUNT(Id)
+FROM Lead
+GROUP BY CALENDAR_YEAR(CreatedDate), CALENDAR_MONTH(CreatedDate)
+ORDER BY CALENDAR_YEAR(CreatedDate), CALENDAR_MONTH(CreatedDate)
+
+-- convertTimezone() inside date functions uses the user's time zone instead of UTC
+SELECT HOUR_IN_DAY(convertTimezone(CreatedDate)), COUNT(Id) FROM Case GROUP BY HOUR_IN_DAY(convertTimezone(CreatedDate))
+</script>
+
+<h2>Other clauses and functions</h2>
+<script type="text/plain" data-lang="soql">
+-- All fields (FIELDS(ALL) and FIELDS(CUSTOM) need LIMIT 200 or less)
+SELECT FIELDS(STANDARD) FROM Account LIMIT 10
+
+-- Picklist labels and formatted values
+SELECT toLabel(StageName), FORMAT(Amount), convertCurrency(Amount) FROM Opportunity
+
+-- Polymorphic fields: choose fields per type
+SELECT Id, Subject,
+  TYPEOF What
+    WHEN Account THEN Name, Industry
+    WHEN Opportunity THEN Name, Amount
+    ELSE Name
+  END
+FROM Task
+
+-- Filter on polymorphic type
+SELECT Id FROM Task WHERE What.Type = 'Opportunity'
+SELECT Id FROM Case WHERE Owner.Type = 'Queue'
+
+-- Lock rows for update within this transaction (Apex)
+SELECT Id, Balance__c FROM Wallet__c WHERE Id = :walletId FOR UPDATE
+
+-- Include the Recycle Bin (Apex)
+SELECT Id, Name FROM Account WHERE IsDeleted = true ALL ROWS
+
+-- Paging (OFFSET max 2,000)
+SELECT Id, Name FROM Account ORDER BY Name LIMIT 50 OFFSET 100
+</script>
+
+<h2>SOQL in Apex</h2>
+<script type="text/plain" data-lang="apex">
+// Bind variables (safe from injection)
+Set<Id> ids = Trigger.newMap.keySet();
+String industry = 'Technology';
+List<Account> accs = [SELECT Id, Name FROM Account WHERE Id IN :ids AND Industry = :industry];
+
+// Bind expressions
+List<Contact> recent = [SELECT Id FROM Contact WHERE CreatedDate > :Datetime.now().addHours(-1)];
+
+// Single record: throws QueryException if 0 rows (or more than 1)
+Account one = [SELECT Id FROM Account WHERE Name = 'Acme' LIMIT 1];
+
+// Safer single record
+List<Account> found = [SELECT Id FROM Account WHERE Name = 'Acme' LIMIT 1];
+Account maybe = found.isEmpty() ? null : found[0];
+
+// Map by Id
+Map<Id, Contact> byId = new Map<Id, Contact>([SELECT Id, Email FROM Contact WHERE AccountId IN :ids]);
+
+// SOQL for-loop: fetches 200 at a time — low heap for large result sets
+for (List<Contact> chunk : [SELECT Id, Email FROM Contact WHERE Email = null]) {
+    // process up to 200 records per iteration
+}
+
+// Enforce the user's permissions
+List<Account> visible = [SELECT Id, Name FROM Account WITH USER_MODE];
+</script>
+
+<h2>Dynamic SOQL</h2>
+<script type="text/plain" data-lang="apex">
+// Build queries at runtime — e.g. configurable fields or filters
+List<String> fields = new List<String>{ 'Id', 'Name', 'Industry' };
+String soql = 'SELECT ' + String.join(fields, ', ') + ' FROM Account WHERE Industry = :ind LIMIT 50';
+
+// Preferred: explicit bind map + access level
+Map<String, Object> binds = new Map<String, Object>{ 'ind' => userInput };
+List<Account> rows = Database.queryWithBinds(soql, binds, AccessLevel.USER_MODE);
+
+// If you must concatenate user input, escape it
+String safe = String.escapeSingleQuotes(userInput);
+List<SObject> r2 = Database.query('SELECT Id FROM Account WHERE Name LIKE \'%' + safe + '%\'');
+
+// Validate object/field names against describe before using them
+Boolean ok = Schema.getGlobalDescribe().containsKey(objectName.toLowerCase());
+Integer total = Database.countQuery('SELECT COUNT() FROM Account');
+</script>
+<div class="callout warn"><b>SOQL injection</b> is the most common security review failure. Never concatenate raw user input into a query string. Use binds; whitelist object and field names.</div>
+
+<h2>SOSL</h2>
+<script type="text/plain" data-lang="sosl">
+FIND {Acme*} IN NAME FIELDS
+RETURNING Account(Id, Name, Industry WHERE Industry != null ORDER BY Name LIMIT 10),
+          Contact(Id, Name, Email),
+          Lead(Id, Name, Company)
+LIMIT 50
+</script>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Part</th><th>Options</th></tr></thead>
+<tbody>
+<tr><td><code>FIND {term}</code></td><td>Wildcards <code>*</code> (any chars) and <code>?</code> (one char); operators <code>AND</code>, <code>OR</code>, <code>AND NOT</code>; quoted phrases <code>{"big deal"}</code></td></tr>
+<tr><td><code>IN … FIELDS</code></td><td><code>ALL FIELDS</code> (default), <code>NAME FIELDS</code>, <code>EMAIL FIELDS</code>, <code>PHONE FIELDS</code>, <code>SIDEBAR FIELDS</code></td></tr>
+<tr><td><code>RETURNING</code></td><td>Objects with fields, WHERE, ORDER BY, LIMIT per object</td></tr>
+<tr><td><code>WITH</code></td><td><code>WITH DIVISION</code>, <code>WITH SNIPPET</code> (Knowledge), <code>WITH NETWORK</code></td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex" data-title="SOSL in Apex">
+String term = 'acme';
+List<List<SObject>> results = [FIND :term IN ALL FIELDS
+                               RETURNING Account(Id, Name), Contact(Id, Name, Email)];
+List<Account> accounts = (List<Account>) results[0];
+List<Contact> contacts = (List<Contact>) results[1];
+
+// Dynamic
+List<List<SObject>> r = Search.query('FIND \'' + String.escapeSingleQuotes(term) + '*\' RETURNING Lead(Id)');
+</script>
+<div class="tablewrap"><table>
+<thead><tr><th>Use SOQL when…</th><th>Use SOSL when…</th></tr></thead>
+<tbody>
+<tr><td>You know the object and field</td><td>You don't know which object or field holds the text</td></tr>
+<tr><td>You need exact filters, relationships, aggregates</td><td>You need word/phrase matching across text, email, phone fields</td></tr>
+<tr><td>Results must be complete</td><td>Relevance-ranked results are fine (search index is updated asynchronously, so very new records may not appear)</td></tr>
+</tbody></table></div>
+
+<h2>Useful queries for admins and developers</h2>
+<script type="text/plain" data-lang="soql">
+-- Users with a permission set
+SELECT Assignee.Name, Assignee.Username FROM PermissionSetAssignment WHERE PermissionSet.Name = 'Sales_Rep'
+
+-- Members of a queue or public group
+SELECT UserOrGroupId FROM GroupMember WHERE Group.DeveloperName = 'Support_Tier_2'
+
+-- Active flows and their versions (Tooling API)
+SELECT Definition.DeveloperName, VersionNumber, Status FROM Flow WHERE Status = 'Active'
+
+-- Apex classes by size (Tooling API)
+SELECT Name, LengthWithoutComments, ApiVersion FROM ApexClass ORDER BY LengthWithoutComments DESC
+
+-- Recent logins
+SELECT UserId, LoginTime, Status, SourceIp, Application FROM LoginHistory ORDER BY LoginTime DESC LIMIT 50
+
+-- Field changes on an opportunity
+SELECT Field, OldValue, NewValue, CreatedBy.Name, CreatedDate FROM OpportunityFieldHistory WHERE OpportunityId = '006XXXXXXXXXXXX'
+</script>
+</main>
+</body>
+</html>

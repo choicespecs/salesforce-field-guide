@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agentforce &amp; Data 360 — Salesforce Field Guide</title>
+<meta name="description" content="How Salesforce&#x27;s AI and data platform fit together: Agentforce agents, topics, instructions and actions, prompt templates, grounding, the Einstein Trust Layer, testing agents; Data 360 data streams, data model objects, identity resolution, calculated insights, segments and activation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="agentforce">
+<main class="content">
+<h1>Agentforce & Data 360</h1>
+<p class="lede">Agentforce is Salesforce's platform for AI agents that answer questions and take actions on your data. Data 360 (formerly Data Cloud) unifies data from many systems so agents, analytics and marketing can use it. Both build on the core platform you already know: flows, Apex and permissions.</p>
+<div class="callout"><b>This area changes fastest.</b> Product names, limits and setup screens shift every release. Treat this page as a map of concepts and check current Salesforce Help for specifics.</div>
+
+<h2>How an agent works</h2>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  U["User or customer<br/>(Slack, Lightning, web chat, API)"] --> R["Reasoning engine<br/>classifies the request into a topic"]
+  R --> T["Topic<br/>instructions + allowed actions"]
+  T --> A1["Action: Flow"]
+  T --> A2["Action: Apex (invocable)"]
+  T --> A3["Action: Prompt template"]
+  T --> A4["Standard actions<br/>(query records, summarise, knowledge)"]
+  A1 & A2 & A3 & A4 --> R
+  R --> TL["Einstein Trust Layer<br/>masking, grounding, toxicity, audit"] --> U
+</pre></div>
+<div class="defs">
+<div><b>Agent</b><p>A configured assistant with a role, a channel (internal employee agent, customer-facing service agent, etc.) and a set of topics. It runs as an <b>agent user</b> whose permissions limit what it can see and do.</p></div>
+<div><b>Topic</b><p>A job the agent can do ("Check order status", "Reschedule appointment"), with a classification description, scope and natural-language <b>instructions</b>.</p></div>
+<div><b>Action</b><p>Something the agent can call: an autolaunched Flow, an invocable Apex method, a prompt template, an API (via External Services or MuleSoft), or a standard action. The action's description tells the reasoning engine when to use it and what inputs mean.</p></div>
+<div><b>Reasoning engine</b><p>Plans which topic and actions to use, asks for missing inputs, calls actions and composes the answer.</p></div>
+<div><b>Agentforce Builder</b><p>Setup → Agentforce Agents. Configure topics and actions, test conversations, and see the reasoning plan for each turn.</p></div>
+</div>
+
+<h2>Building actions</h2>
+<p>Agent actions are mostly things you already know how to build. Good descriptions matter as much as the code.</p>
+<script type="text/plain" data-lang="apex" data-title="An invocable action an agent can call">
+public with sharing class OrderStatusAction {
+
+    public class Request {
+        @InvocableVariable(label='Order number' description='The customer order number, e.g. SO-1001' required=true)
+        public String orderNumber;
+    }
+    public class Response {
+        @InvocableVariable(label='Status' description='Current fulfilment status of the order')
+        public String status;
+        @InvocableVariable(label='Expected delivery' description='Estimated delivery date, if known')
+        public Date expectedDelivery;
+    }
+
+    @InvocableMethod(label='Get order status'
+                     description='Looks up the fulfilment status and expected delivery date of one order by its order number.')
+    public static List<Response> getStatus(List<Request> requests) {
+        Set<String> numbers = new Set<String>();
+        for (Request r : requests) numbers.add(r.orderNumber);
+        Map<String, Order__c> byNumber = new Map<String, Order__c>();
+        for (Order__c o : [SELECT Name, Status__c, Expected_Delivery__c FROM Order__c
+                           WHERE Name IN :numbers WITH USER_MODE]) {
+            byNumber.put(o.Name, o);
+        }
+        List<Response> out = new List<Response>();
+        for (Request r : requests) {
+            Response res = new Response();
+            Order__c o = byNumber.get(r.orderNumber);
+            res.status = o == null ? 'Not found' : o.Status__c;
+            res.expectedDelivery = o?.Expected_Delivery__c;
+            out.add(res);
+        }
+        return out;
+    }
+}
+</script>
+<ul>
+<li><b>Least privilege</b>: the agent user's permission sets decide what actions can touch. Use <code>WITH USER_MODE</code> and user-mode DML in actions.</li>
+<li><b>Keep actions narrow</b>: "Get order status" is better than "Run any query".</li>
+<li><b>Confirmations</b>: mark actions that change data as requiring user confirmation.</li>
+<li><b>Outputs</b> can be shown to the user directly or used by the reasoning engine to compose a reply.</li>
+</ul>
+
+<h2>Prompt templates</h2>
+<p><b>Prompt Builder</b> (Setup → Prompt Builder) creates reusable prompts grounded in Salesforce data. Template types include <i>Sales Email</i>, <i>Field Generation</i> (fills a field on a record page), <i>Record Summary</i> and <i>Flex</i> (any inputs). Templates merge record fields, related records, flow outputs, Apex outputs and Data 360 data into the prompt.</p>
+<script type="text/plain" data-lang="text" data-title="A Flex template body">
+You are a support assistant for Acme.
+Summarise this case for a supervisor in 3 bullet points: the problem, what has been tried, and the next step.
+Use a neutral tone. Don't include personal data.
+
+Case subject: {!$Input:Case.Subject}
+Description: {!$Input:Case.Description}
+Status: {!$Input:Case.Status}
+</script>
+<p>Call a prompt template from Flow (as an action), from Apex (<code>ConnectApi.EinsteinLLM.generateMessagesForPromptTemplate</code>), from an LWC via Apex, or as an agent action.</p>
+
+<h2>Einstein Trust Layer</h2>
+<ul>
+<li><b>Secure data retrieval and grounding</b> respect the running user's permissions.</li>
+<li><b>Data masking</b> replaces PII before the prompt leaves Salesforce, and restores it in the response.</li>
+<li><b>Zero data retention</b> agreements with model providers.</li>
+<li><b>Toxicity scoring</b> and <b>audit trail</b> (stored in Data 360) for prompts and responses.</li>
+</ul>
+
+<h2>Testing and monitoring agents</h2>
+<ul>
+<li>Use the Builder's conversation preview to see which topic and actions were chosen and why.</li>
+<li><b>Testing Center</b> runs batches of test utterances with expected topics, actions and responses — regression tests for agents.</li>
+<li>Monitor production usage, escalations and feedback with Agentforce analytics; review audit data for quality and safety.</li>
+<li>Agents consume usage-based credits — know your org's pricing model before scaling up.</li>
+</ul>
+
+<h2>Data 360 (Data Cloud)</h2>
+<p>Data 360 ingests data from Salesforce orgs and external systems, harmonises it into a common model, resolves identities into unified profiles, and makes the result available to segments, analytics, agents and apps. It can also <b>zero-copy</b> federate with warehouses like Snowflake, Databricks, BigQuery and Redshift instead of copying data.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  S1[CRM orgs] --> DS[Data streams]
+  S2["Web/mobile events"] --> DS
+  S3["Warehouses (zero-copy)"] --> DS
+  S4["Files / S3 / APIs"] --> DS
+  DS --> DLO["Data lake objects<br/>(raw)"]
+  DLO -->|mapping| DMO["Data model objects<br/>(harmonised)"]
+  DMO --> IR[Identity resolution]
+  IR --> UP[Unified profiles]
+  UP --> CI[Calculated insights]
+  UP --> SEG[Segments]
+  SEG --> ACT["Activation<br/>(Marketing, ads, orgs)"]
+  UP --> AG["Agents, Prompt Builder,<br/>Data Graphs, CRM enrichment"]
+</pre></div>
+<div class="defs">
+<div><b>Data stream</b><p>A connection that ingests data from a source on a schedule or in real time.</p></div>
+<div><b>Data lake object (DLO)</b><p>The raw ingested data.</p></div>
+<div><b>Data model object (DMO)</b><p>A harmonised entity in the Customer 360 data model (Individual, Contact Point Email, Sales Order…). DLO fields are mapped to DMO fields.</p></div>
+<div><b>Identity resolution</b><p>Match rules (exact email, fuzzy name + address…) and reconciliation rules that merge records from many sources into a <b>unified individual</b>.</p></div>
+<div><b>Calculated insight</b><p>A metric defined in SQL over DMOs, e.g. lifetime value or orders in the last 90 days.</p></div>
+<div><b>Segment</b><p>A filtered audience of unified profiles, e.g. "customers with LTV &gt; 5,000 who haven't ordered in 6 months".</p></div>
+<div><b>Activation</b><p>Publishing a segment to a target: Marketing Cloud, ad platforms, an org, a file.</p></div>
+<div><b>Data graph</b><p>A pre-joined, denormalised view of a profile and related data for fast lookups by agents and apps.</p></div>
+<div><b>Data actions & triggered flows</b><p>React to changes in Data 360 by publishing events or starting flows in an org.</p></div>
+</div>
+<p>From Apex you can query Data 360 with <code>ConnectApi.CdpQuery</code> (SQL); from the org UI, <b>Data 360 related lists</b> and <b>copy fields</b> bring unified data onto CRM records.</p>
+</main>
+</body>
+</html>

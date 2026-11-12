@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Order of execution — Salesforce Field Guide</title>
+<meta name="description" content="The Salesforce save order of execution step by step: before-save flows, triggers, validation rules, duplicate rules, after-save automation, roll-ups, commit and post-commit logic, with examples of how it explains common bugs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="order-of-execution">
+<main class="content">
+<h1>Order of execution</h1>
+<p class="lede">When a record is saved, Salesforce runs a fixed sequence of steps. Knowing it explains "why did my value get overwritten?" and "why did this run twice?"</p>
+
+<h2>The sequence</h2>
+<p>Simplified from the official list; highlighted steps are the ones you'll work with most.</p>
+<ol class="steps">
+<li><div>Load the original record from the database (or initialise a new one) and apply the new field values.<small>From the UI, the browser has already checked dependent picklists and field lengths.</small></div></li>
+<li><div><b>System validation</b> (UI saves): required fields on the layout, field formats, max lengths. API and Apex saves only check things like foreign keys here.</div></li>
+<li class="hot"><div><b>Before-save record-triggered flows</b> (Fast Field Updates)</div></li>
+<li class="hot"><div><b>Before triggers</b> (Apex)</div></li>
+<li><div>System validation again (now for all saves: required fields at field level, formats), then <b>custom validation rules</b>.<small>Because validation runs after before-triggers, a trigger can fix a value before it's validated.</small></div></li>
+<li><div><b>Duplicate rules</b>. A blocking rule stops the save here.</div></li>
+<li><div>Record is <b>saved to the database but not committed</b>. The ID now exists.</div></li>
+<li class="hot"><div><b>After triggers</b> (Apex)</div></li>
+<li><div>Assignment rules (leads, cases)</div></li>
+<li><div>Auto-response rules</div></li>
+<li><div>Workflow rules (legacy). If a workflow field update fires, the record is updated again and <b>before and after update triggers run one more time</b> (custom validation rules do not).</div></li>
+<li><div>Escalation rules</div></li>
+<li><div>Processes (legacy Process Builder) and flows they launch</div></li>
+<li class="hot"><div><b>After-save record-triggered flows</b></div></li>
+<li><div>Entitlement rules</div></li>
+<li><div><b>Roll-up summary fields</b> on the parent are recalculated → the parent goes through its own save procedure. Same for grandparents.</div></li>
+<li><div>Criteria-based sharing evaluated</div></li>
+<li class="hot"><div><b>Commit</b>: all DML in the transaction becomes permanent.</div></li>
+<li><div><b>Post-commit</b>: emails are sent, async Apex (queueable, future) starts, platform events published "after commit" are delivered, asynchronous flow paths run.</div></li>
+</ol>
+<p><a href="https://developer.salesforce.com/docs/atlas.en-us.apexcode.meta/apexcode/apex_triggers_order_of_execution.htm">Full official list in the Apex Developer Guide →</a></p>
+
+<h2>One transaction, one set of limits</h2>
+<p>Everything from step 1 to the commit is <b>one transaction</b>:</p>
+<ul>
+<li>An unhandled exception anywhere — a trigger, a flow fault, a validation rule failing on a child record you updated — rolls back <b>every</b> change in the transaction.</li>
+<li>All triggers, flows and roll-ups share <b>one set of governor limits</b>. A flow that does 30 queries and a trigger that does 80 together exceed the 100-query limit.</li>
+<li>DML inside a trigger starts the whole sequence again for the other object, nested inside the same transaction.</li>
+</ul>
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  participant U as User saves Opportunity
+  participant O as Opportunity automation
+  participant A as Account automation
+  U->>O: before flows, before triggers, validation
+  O->>O: save (uncommitted)
+  O->>O: after triggers → update Account
+  O->>A: Account: before → validation → save → after
+  A-->>O: back to Opportunity
+  O->>O: after-save flows
+  O->>A: roll-up recalculates → Account saves again
+  O->>U: commit (or roll back everything)
+</pre></div>
+
+<h2>Bulk saves</h2>
+<p>When many records are saved together (API, Data Loader, a flow updating a collection), Salesforce processes them in <b>chunks of 200</b>. Each step runs once per chunk with all 200 records: the before trigger sees <code>Trigger.new</code> with 200 records, then validation runs for all 200, and so on. That's why bulkified code matters: one query per chunk, not one per record.</p>
+<p>With <code>allOrNone = false</code> (partial success), records that fail validation are removed and the remaining ones are re-run through the triggers, so triggers can execute more than once for the same records (up to three attempts).</p>
+
+<h2>Explaining common surprises</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Symptom</th><th>Explanation</th></tr></thead>
+<tbody>
+<tr><td>A value set in a before-save flow is overwritten</td><td>A before trigger runs <i>after</i> before-save flows and changed it.</td></tr>
+<tr><td>A trigger fires twice for one save</td><td>A legacy workflow field update re-runs update triggers; or a roll-up on a parent updates the parent, whose trigger updates the child again. Add recursion control (<a href="triggers.html">Triggers</a>).</td></tr>
+<tr><td>A validation rule didn't block a value set by automation</td><td>Values set by legacy workflow field updates re-run triggers but not custom validation rules. Values set in a before trigger <i>are</i> validated, because validation runs after it.</td></tr>
+<tr><td>A callout fails with "uncommitted work pending"</td><td>DML already happened in this transaction. Move the callout to a queueable or an async flow path (post-commit).</td></tr>
+<tr><td>An email was sent even though the save failed</td><td>It wasn't: emails go out post-commit. If you saw one, it came from a separate, successful transaction (e.g. async path or a retried save).</td></tr>
+<tr><td>Platform event received for a record that doesn't exist</td><td>The event was published "immediately" and the transaction later rolled back. Use "publish after commit" for events about saved data.</td></tr>
+<tr><td>Changing a child record changes the parent's LastModifiedDate</td><td>A roll-up summary on the parent recalculated and saved the parent.</td></tr>
+</tbody></table></div>
+
+<h2>What doesn't follow this sequence</h2>
+<ul>
+<li><b>Some operations skip triggers</b>: cascade-deleting master-detail children, mass address updates, renaming picklist values, and a few others don't fire triggers on the affected records.</li>
+<li><b>Lead conversion</b> fires triggers on the lead and on the created account, contact and opportunity — but not validation rules on the lead unless enabled in Lead Settings.</li>
+<li><b>Merge</b> fires delete triggers on the losing records and update triggers on the winner.</li>
+<li><b>Undelete</b> fires <code>after undelete</code> triggers only.</li>
+</ul>
+</main>
+</body>
+</html>

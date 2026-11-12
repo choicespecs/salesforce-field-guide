@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Data model — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce objects, fields and relationships: standard CRM objects, every field type, lookup vs master-detail, junction objects, record types, page layouts, Dynamic Forms and schema naming conventions.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="data-model">
+<main class="content">
+<h1>Data model</h1>
+<p class="lede">Objects are tables, fields are columns, records are rows. The differences from a relational database are in the relationship types, the built-in fields every object gets, and how the UI is generated from the schema.</p>
+
+<h2>Standard CRM objects</h2>
+<div class="diagram"><pre class="mermaid">
+erDiagram
+  Account ||--o{ Contact : "has"
+  Account ||--o{ Opportunity : "has"
+  Account ||--o{ Case : "has"
+  Account ||--o{ Account : "parent of"
+  Contact ||--o{ Case : "reports"
+  Opportunity ||--o{ OpportunityLineItem : "contains"
+  Opportunity ||--o{ OpportunityContactRole : "involves"
+  Contact ||--o{ OpportunityContactRole : "plays role"
+  Product2 ||--o{ PricebookEntry : "priced in"
+  Pricebook2 ||--o{ PricebookEntry : "lists"
+  PricebookEntry ||--o{ OpportunityLineItem : "used by"
+  Campaign ||--o{ CampaignMember : "has"
+  Lead ||--o{ CampaignMember : "joins"
+  Contact ||--o{ CampaignMember : "joins"
+</pre></div>
+<div class="tablewrap"><table>
+<thead><tr><th>Object</th><th>API name</th><th>Purpose and key fields</th></tr></thead>
+<tbody>
+<tr><td>Account</td><td><code>Account</code></td><td>A company (or a person with Person Accounts). <code>Name</code>, <code>ParentId</code> (account hierarchy), <code>Industry</code>, <code>Type</code>, <code>BillingAddress</code>, <code>OwnerId</code>.</td></tr>
+<tr><td>Contact</td><td><code>Contact</code></td><td>A person. <code>AccountId</code> (lookup, optional but usually set), <code>Email</code>, <code>ReportsToId</code>. With "Contacts to Multiple Accounts", extra links live in <code>AccountContactRelation</code>.</td></tr>
+<tr><td>Lead</td><td><code>Lead</code></td><td>An unqualified prospect. <code>Status</code>, <code>Company</code>, <code>IsConverted</code>, <code>ConvertedAccountId</code>/<code>ConvertedContactId</code>/<code>ConvertedOpportunityId</code>.</td></tr>
+<tr><td>Opportunity</td><td><code>Opportunity</code></td><td>A deal. <code>StageName</code>, <code>CloseDate</code>, <code>Amount</code>, <code>Probability</code>, <code>ForecastCategoryName</code>, <code>IsClosed</code>, <code>IsWon</code>.</td></tr>
+<tr><td>Case</td><td><code>Case</code></td><td>A support issue. <code>Status</code>, <code>Priority</code>, <code>Origin</code>, <code>ContactId</code>, <code>AccountId</code>, <code>IsClosed</code>, <code>OwnerId</code> (user or queue).</td></tr>
+<tr><td>Task / Event</td><td><code>Task</code>, <code>Event</code></td><td>Activities. <code>WhoId</code> points to a Lead or Contact; <code>WhatId</code> points to almost anything else. Both are <b>polymorphic</b> lookups.</td></tr>
+<tr><td>Campaign</td><td><code>Campaign</code>, <code>CampaignMember</code></td><td>Marketing efforts and who responded.</td></tr>
+<tr><td>Products & price books</td><td><code>Product2</code>, <code>Pricebook2</code>, <code>PricebookEntry</code>, <code>OpportunityLineItem</code></td><td>Catalogue, price lists, a product's price in a list, and a line on an opportunity.</td></tr>
+<tr><td>User</td><td><code>User</code></td><td>A login. <code>ProfileId</code>, <code>UserRoleId</code>, <code>ManagerId</code>, <code>IsActive</code>.</td></tr>
+<tr><td>Files</td><td><code>ContentDocument</code>, <code>ContentVersion</code>, <code>ContentDocumentLink</code></td><td>Salesforce Files: a document, its versions, and the links that share it to records.</td></tr>
+</tbody></table></div>
+
+<h2>Fields every record has</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>Id</code></td><td>18-character unique ID</td></tr>
+<tr><td><code>Name</code></td><td>The record's name: text, or an auto-number like <code>INV-{0000}</code> on custom objects</td></tr>
+<tr><td><code>OwnerId</code></td><td>User or queue that owns it (not on detail records in master-detail)</td></tr>
+<tr><td><code>CreatedById</code>, <code>CreatedDate</code></td><td>Who created it and when (UTC)</td></tr>
+<tr><td><code>LastModifiedById</code>, <code>LastModifiedDate</code></td><td>Last change by a user or process</td></tr>
+<tr><td><code>SystemModstamp</code></td><td>Last change including system changes; indexed — use it for sync queries</td></tr>
+<tr><td><code>IsDeleted</code></td><td>True for records in the Recycle Bin (query with <code>ALL ROWS</code>)</td></tr>
+<tr><td><code>RecordTypeId</code></td><td>Present once the object has record types</td></tr>
+</tbody></table></div>
+
+<h2>Field types</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Type</th><th>Stores</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Text / Text Area / Long Text Area / Rich Text</td><td>Strings</td><td>Text up to 255; Long Text up to 131,072. Long and rich text can't be used in SOQL <code>WHERE</code> filters.</td></tr>
+<tr><td>Number / Currency / Percent</td><td>Decimals</td><td>Precision and scale set at creation. Currency respects multi-currency if enabled.</td></tr>
+<tr><td>Checkbox</td><td>Boolean</td><td>Never null — defaults to false.</td></tr>
+<tr><td>Date / Date/Time / Time</td><td>Temporal values</td><td>Date/Time is stored in UTC and shown in the user's time zone.</td></tr>
+<tr><td>Picklist</td><td>One value from a list</td><td>Has an API value and a label (translatable). <b>Restricted</b> picklists reject values not in the list, even from the API.</td></tr>
+<tr><td>Multi-select picklist</td><td>Several values joined with <code>;</code></td><td>Awkward in reports and formulas (<code>INCLUDES()</code>). Prefer a related object if you need to report on it.</td></tr>
+<tr><td>Email / Phone / URL</td><td>Strings with format and UI behaviour</td><td>Click-to-email, click-to-dial, clickable links.</td></tr>
+<tr><td>Lookup / Master-Detail / External Lookup / Hierarchy</td><td>A reference to another record</td><td>See relationships below.</td></tr>
+<tr><td>Formula</td><td>Calculated at read time</td><td>Read-only; can span parent relationships. See <a href="formulas.html">Formulas</a>.</td></tr>
+<tr><td>Roll-Up Summary</td><td>COUNT/SUM/MIN/MAX of child records</td><td>Master-detail parents only.</td></tr>
+<tr><td>Auto Number</td><td>Sequential display value</td><td>e.g. <code>CASE-{00000}</code>. Not guaranteed gapless.</td></tr>
+<tr><td>Geolocation</td><td>Latitude + longitude</td><td>Use <code>DISTANCE()</code> in SOQL and formulas.</td></tr>
+<tr><td>Encrypted Text</td><td>Masked text (Classic encryption)</td><td>Limited; Shield Platform Encryption is the modern option.</td></tr>
+</tbody></table></div>
+<h3>Field options worth knowing</h3>
+<ul>
+<li><b>External ID</b>: marks a field as another system's key. It's indexed and enables <b>upsert</b> by that key from Apex, the API, Data Loader and Flow.</li>
+<li><b>Unique</b>: enforces uniqueness (optionally case-sensitive). Gives an index too.</li>
+<li><b>Required</b>: at the field level it's enforced everywhere, including the API. Requiring it on a page layout only affects that layout in the UI.</li>
+<li><b>Default value</b>: a formula evaluated when a new record is created in the UI or API (if the field isn't set).</li>
+<li><b>Field history tracking</b>: up to 20 fields per object; history is queryable in <code>AccountHistory</code>, <code>Invoice__History</code> etc.</li>
+<li><b>Global value sets</b>: one picklist value list shared by many fields.</li>
+<li><b>Dependent picklists</b>: values in one picklist controlled by another picklist or checkbox.</li>
+</ul>
+
+<h2>Relationships</h2>
+<div class="tablewrap"><table>
+<thead><tr><th></th><th>Lookup</th><th>Master-detail</th></tr></thead>
+<tbody>
+<tr><td>Required?</td><td>Optional by default (can be made required)</td><td>Always required</td></tr>
+<tr><td>Delete parent</td><td>Clears the field, blocks the delete, or (for custom lookups) cascades — you choose</td><td>Deletes all children (cascade)</td></tr>
+<tr><td>Ownership & sharing</td><td>Child has its own owner and sharing</td><td>Child has no owner; access is inherited from the master</td></tr>
+<tr><td>Roll-up summary fields</td><td>No (use Flow/Apex)</td><td>Yes</td></tr>
+<tr><td>Reparenting</td><td>Always allowed</td><td>Only if "Allow reparenting" is enabled</td></tr>
+<tr><td>Limits</td><td>Up to 40 relationship fields per object (lookups and master-details combined)</td><td>Up to 2 master-detail fields per object; chains can be up to 3 levels deep</td></tr>
+<tr><td>Standard object as child?</td><td>Yes</td><td>No — standard objects can be masters but not details</td></tr>
+</tbody></table></div>
+<h3>Many-to-many with a junction object</h3>
+<p>Model "a Course has many Students and a Student takes many Courses" with an object in the middle that has two master-detail fields.</p>
+<div class="diagram"><pre class="mermaid">
+erDiagram
+  Course__c ||--o{ Enrollment__c : "master"
+  Student__c ||--o{ Enrollment__c : "master"
+  Enrollment__c {
+    string Status__c
+    date Enrolled_On__c
+    number Grade__c
+  }
+</pre></div>
+<p>The first master-detail field you create is the <b>primary</b> master: it controls the junction record's look and feel and, together with the second, its sharing (users need access to both masters). Roll-ups work on both parents.</p>
+<h3>Special relationship types</h3>
+<ul>
+<li><b>Self relationship</b>: a lookup to the same object, e.g. <code>Account.ParentId</code>.</li>
+<li><b>Hierarchical</b>: a lookup from User to User (<code>ManagerId</code>).</li>
+<li><b>Polymorphic</b>: one field can point to several object types (<code>WhoId</code>, <code>WhatId</code>, <code>OwnerId</code> which can be a User or a Queue). Query with <code>TYPEOF</code> (see <a href="soql.html">SOQL</a>).</li>
+<li><b>External lookup / indirect lookup</b>: links involving External Objects (<code>__x</code>) from Salesforce Connect.</li>
+</ul>
+
+<h2>Relationship names in code</h2>
+<p>Each relationship has two names: the <b>field</b> (holds the ID) and the <b>relationship name</b> (traverses to the related record).</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th></th><th>Standard</th><th>Custom</th></tr></thead>
+<tbody>
+<tr><td>ID field on child</td><td><code>Contact.AccountId</code></td><td><code>Invoice_Line__c.Invoice__c</code></td></tr>
+<tr><td>Child → parent traversal</td><td><code>Contact.Account.Name</code></td><td><code>Invoice_Line__c.Invoice__r.Status__c</code></td></tr>
+<tr><td>Parent → children (subquery)</td><td><code>(SELECT Id FROM Contacts)</code></td><td><code>(SELECT Id FROM Invoice_Lines__r)</code></td></tr>
+</tbody></table></div>
+<p>The child relationship name (<code>Invoice_Lines</code>) is set on the lookup field when you create it. Check it in Object Manager → the child object → the field → "Child Relationship Name".</p>
+
+<h2>API name suffixes</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Suffix</th><th>Meaning</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><code>__c</code></td><td>Custom object or field</td><td><code>Invoice__c</code>, <code>Account.Tier__c</code></td></tr>
+<tr><td><code>__r</code></td><td>Custom relationship traversal</td><td><code>Invoice__r.Name</code></td></tr>
+<tr><td><code>__mdt</code></td><td>Custom metadata type</td><td><code>Tax_Rate__mdt</code></td></tr>
+<tr><td><code>__e</code></td><td>Platform event</td><td><code>Order_Shipped__e</code></td></tr>
+<tr><td><code>__x</code></td><td>External object</td><td><code>Erp_Order__x</code></td></tr>
+<tr><td><code>__b</code></td><td>Big object</td><td><code>Audit_Event__b</code></td></tr>
+<tr><td><code>__Share</code></td><td>Sharing table of a custom object</td><td><code>Invoice__Share</code></td></tr>
+<tr><td><code>__History</code></td><td>Field history of a custom object</td><td><code>Invoice__History</code></td></tr>
+<tr><td><code>__ChangeEvent</code></td><td>Change Data Capture event</td><td><code>Invoice__ChangeEvent</code></td></tr>
+<tr><td><code>ns__</code> prefix</td><td>Managed-package namespace</td><td><code>SBQQ__Quote__c</code></td></tr>
+</tbody></table></div>
+
+<h2>Record types</h2>
+<p>A record type lets one object support different processes. Each record type has its own <b>picklist values</b>, <b>page layout assignment</b> (per profile) and, for Leads, Opportunities, Cases and Solutions, its own <b>business process</b> (which stages or statuses are available).</p>
+<p>Example: Opportunity record types <i>New Business</i> and <i>Renewal</i>, where Renewal has fewer stages and a different layout. Users need the record type assigned (via profile or permission set) to create records of that type.</p>
+<script type="text/plain" data-lang="apex" data-title="Get a record type ID without hardcoding it">
+Id renewalRt = Schema.SObjectType.Opportunity
+    .getRecordTypeInfosByDeveloperName()
+    .get('Renewal')
+    .getRecordTypeId();
+
+insert new Opportunity(Name = 'ACME renewal', RecordTypeId = renewalRt,
+                       StageName = 'Prospecting', CloseDate = Date.today().addMonths(2));
+</script>
+<div class="callout"><b>Don't use record types just to change the layout.</b> If only the visible fields differ, use Dynamic Forms visibility rules on a single Lightning record page. Record types are for different processes.</div>
+
+<h2>Page layouts, Lightning pages and Dynamic Forms</h2>
+<div class="defs">
+<div><b>Page layout</b><p>Which fields, related lists, buttons and quick actions appear, and which fields are read-only or required in the UI. Assigned by profile × record type.</p></div>
+<div><b>Lightning record page</b><p>The page's overall structure built in Lightning App Builder: tabs, components, related lists, custom LWCs. Assigned by app, record type and profile ("activation").</p></div>
+<div><b>Dynamic Forms</b><p>Place individual fields and field sections directly on the Lightning page, with visibility rules (e.g. show <i>Loss Reason</i> only when Stage = Closed Lost). Replaces most uses of multiple page layouts.</p></div>
+<div><b>Dynamic Actions</b><p>Show buttons/actions conditionally (e.g. show "Escalate" only for high-priority cases).</p></div>
+<div><b>Compact layout</b><p>The fields shown in the record highlights panel at the top and on mobile.</p></div>
+<div><b>Search layout</b><p>Columns shown in search results and lookup dialogs.</p></div>
+</div>
+
+<h2>Schema tools</h2>
+<ul>
+<li><b>Schema Builder</b> (Setup → Schema Builder): a drag-and-drop ERD of your objects; also creates objects and fields.</li>
+<li><b>Object Manager → Fields & Relationships → Where is this used?</b>: shows formulas, flows, Apex and layouts that reference a field. Check before deleting.</li>
+<li><b>Describe calls</b> in Apex give you schema at runtime:</li>
+</ul>
+<script type="text/plain" data-lang="apex" data-title="Describe an object at runtime">
+Schema.DescribeSObjectResult d = Account.SObjectType.getDescribe();
+System.debug(d.getLabel() + ' / ' + d.getLabelPlural());
+System.debug('Can create? ' + d.isCreateable());
+
+for (Schema.SObjectField f : d.fields.getMap().values()) {
+    Schema.DescribeFieldResult fd = f.getDescribe();
+    if (fd.isCustom()) System.debug(fd.getName() + ' : ' + fd.getType());
+}
+
+// Picklist values
+for (Schema.PicklistEntry e : Account.Industry.getDescribe().getPicklistValues()) {
+    if (e.isActive()) System.debug(e.getValue() + ' = ' + e.getLabel());
+}
+
+// Object by name (dynamic)
+Schema.SObjectType t = Schema.getGlobalDescribe().get('Invoice__c');
+SObject rec = t.newSObject();
+rec.put('Name', 'INV-1');
+</script>
+
+<h2>Other data containers</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Container</th><th>Use for</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Custom Metadata Types (<code>__mdt</code>)</td><td>Configuration that deploys with code: mappings, thresholds, feature flags</td><td>Read with <code>My_Setting__mdt.getInstance('DevName')</code> or <code>getAll()</code> — no SOQL limit used.</td></tr>
+<tr><td>Custom Settings</td><td>Per-user/profile switches (hierarchy settings), cached config</td><td>Values are data, so they don't deploy. <code>My_Setting__c.getInstance()</code> returns the most specific value for the running user.</td></tr>
+<tr><td>Big Objects (<code>__b</code>)</td><td>Billions of rows of history/audit data</td><td>Query only by the defined index; no triggers, no standard UI.</td></tr>
+<tr><td>External Objects (<code>__x</code>)</td><td>Data that stays in another system</td><td>Salesforce Connect queries the source live.</td></tr>
+<tr><td>Platform Cache</td><td>Fast, temporary key-value data</td><td>Org and session partitions; values can be evicted at any time.</td></tr>
+</tbody></table></div>
+</main>
+</body>
+</html>

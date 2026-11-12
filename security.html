@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Security &amp; sharing — Salesforce Field Guide</title>
+<meta name="description" content="The Salesforce access model in depth: profiles, permission sets and groups, field-level security, org-wide defaults, role hierarchy, sharing rules, teams, implicit sharing, Apex managed sharing, restriction rules and debugging access.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="security">
+<main class="content">
+<h1>Security & sharing</h1>
+<p class="lede">Access is decided in layers. A user must pass every layer to see a value: the org, the object, the field, and finally the specific record.</p>
+
+<h2>The layers</h2>
+<div class="diagram"><pre class="mermaid">
+flowchart TD
+  A["1 · Org access<br/>login, MFA/SSO, IP ranges, login hours, session settings"] --> B["2 · Object access<br/>Read / Create / Edit / Delete / View All / Modify All"]
+  B --> C["3 · Field access<br/>field-level security: Read, Edit"]
+  C --> D["4 · Record access"]
+  D --> E["Org-wide defaults: the baseline"]
+  E --> F["+ Role hierarchy"]
+  F --> G["+ Sharing rules, teams, manual & Apex sharing"]
+  G --> H["− Restriction rules filter what's visible"]
+</pre></div>
+<div class="tablewrap"><table>
+<thead><tr><th>Question</th><th>Controlled by</th></tr></thead>
+<tbody>
+<tr><td>Can they log in, from where, when?</td><td>Profile (login hours, IP ranges), session settings, MFA, SSO, network access</td></tr>
+<tr><td>Can they use this object at all?</td><td>Object permissions in permission sets / profile</td></tr>
+<tr><td>Can they see/edit this field?</td><td>Field-level security in permission sets / profile</td></tr>
+<tr><td>Which records can they see?</td><td>Org-wide defaults + role hierarchy + sharing</td></tr>
+<tr><td>Can they do this system action (export, run reports, API)?</td><td>System permissions in permission sets / profile</td></tr>
+<tr><td>Which fields show on the page?</td><td>Page layout / Dynamic Forms (UI only — not security)</td></tr>
+</tbody></table></div>
+
+<h2>Profiles, permission sets and groups</h2>
+<div class="defs">
+<div><b>Profile</b><p>Exactly one per user. Holds login hours and IP ranges, default record types, page layout assignments, default app, and (historically) object, field and system permissions. Best practice now: give everyone a minimal profile and grant access with permission sets.</p></div>
+<div><b>Permission set</b><p>A bundle of object, field, tab, app, Apex class, Visualforce page, custom permission and system permissions. A user can have many. Permissions only add access; nothing in Salesforce's permission model takes access away.</p></div>
+<div><b>Permission set group</b><p>A bundle of permission sets assigned as one — a persona like "Support Agent". A <b>muting permission set</b> inside the group can switch off specific permissions that the included sets would otherwise grant.</p></div>
+<div><b>Custom permission</b><p>A named on/off flag you create (e.g. <code>Bypass_Validation</code>, <code>Approve_Discounts</code>) and grant through permission sets. Check it in formulas (<code>$Permission.Approve_Discounts</code>), Flow, Apex (<code>FeatureManagement.checkPermission('Approve_Discounts')</code>) and LWC (<code>@salesforce/customPermission/Approve_Discounts</code>).</p></div>
+<div><b>Permission set licence</b><p>Unlocks add-on features (e.g. CPQ, Field Service). Must be assigned before the permission set that uses it.</p></div>
+</div>
+<h3>Object permissions</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Permission</th><th>Grants</th></tr></thead>
+<tbody>
+<tr><td>Read</td><td>See records the user has record-level access to</td></tr>
+<tr><td>Create / Edit / Delete</td><td>Those actions, still subject to record access</td></tr>
+<tr><td>View All</td><td>Read every record of the object, ignoring sharing</td></tr>
+<tr><td>Modify All</td><td>Read, edit, delete, transfer every record, ignoring sharing</td></tr>
+<tr><td>View All Fields</td><td>Read every field on the object regardless of FLS</td></tr>
+</tbody></table></div>
+<p>System permissions <b>View All Data</b> and <b>Modify All Data</b> do the same across every object. Reserve them for admins and a few integration users.</p>
+
+<h2>Org-wide defaults (OWD)</h2>
+<p>Setup → Sharing Settings. The OWD is the baseline record access for users who don't own the record. Set it to what the <i>most restricted</i> user should have, then open up with the tools below.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Setting</th><th>Non-owners can…</th><th>Typical use</th></tr></thead>
+<tbody>
+<tr><td>Private</td><td>Not see records (unless shared)</td><td>Opportunities, sensitive custom objects</td></tr>
+<tr><td>Public Read Only</td><td>See, not edit</td><td>Accounts in many orgs, reference data</td></tr>
+<tr><td>Public Read/Write</td><td>See and edit</td><td>Collaborative objects with no sensitivity</td></tr>
+<tr><td>Public Read/Write/Transfer</td><td>See, edit, change owner</td><td>Leads and Cases only</td></tr>
+<tr><td>Controlled by Parent</td><td>Inherit from the parent record</td><td>Contacts (from Account); all master-detail children</td></tr>
+<tr><td>Public Full Access</td><td>Everything</td><td>Campaigns only</td></tr>
+</tbody></table></div>
+<p>There are separate <b>internal</b> and <b>external</b> defaults; external (Experience Cloud users) can be the same or more restrictive. <b>Grant Access Using Hierarchies</b> is always on for standard objects and can be switched off for custom objects.</p>
+
+<h2>Role hierarchy</h2>
+<p>Users above someone in the role hierarchy get the same access to that person's records (and, by default, to records shared with them). Roles model <b>data visibility</b>, not the org chart — keep the hierarchy as flat as your visibility needs allow, since deep hierarchies slow down sharing recalculation.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart TD
+  CEO --> VPS["VP Sales"]
+  CEO --> VPSV["VP Service"]
+  VPS --> NAM["Sales Manager, East"]
+  VPS --> WAM["Sales Manager, West"]
+  NAM --> R1["Sales Rep, East"]
+  WAM --> R2["Sales Rep, West"]
+  VPSV --> SUP["Support Manager"] --> AG["Support Agent"]
+</pre></div>
+<p>Here the East manager sees East reps' private opportunities; West reps don't. VP Sales sees all sales records; VP Service sees none of them unless sharing rules open them up.</p>
+
+<h2>Sharing rules and other ways to share</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Mechanism</th><th>How it works</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td>Owner-based sharing rule</td><td>Records owned by members of a group/role → shared with another group/role</td><td>Opportunities owned by East Sales → Read Only to West Sales</td></tr>
+<tr><td>Criteria-based sharing rule</td><td>Records matching field criteria → shared with a group/role</td><td>Accounts where <code>Region__c = 'EMEA'</code> → Read/Write to EMEA Team</td></tr>
+<tr><td>Guest user sharing rule</td><td>Share records with unauthenticated Experience Cloud visitors</td><td>Published FAQs</td></tr>
+<tr><td>Account / Opportunity / Case teams</td><td>Named people get access to one record with a role</td><td>Solution engineer added to an opportunity team</td></tr>
+<tr><td>Manual sharing</td><td>Owner (or above) clicks Sharing on one record</td><td>One-off access</td></tr>
+<tr><td>Enterprise Territory Management</td><td>Account access by territory assignment rules</td><td>Accounts in California → West territory users</td></tr>
+<tr><td>Apex managed sharing</td><td>Code inserts rows into the <code>__Share</code> table</td><td>Share an invoice with the approver chosen on the record</td></tr>
+<tr><td>Implicit sharing</td><td>Automatic, built in</td><td>Owner of a contact/opportunity/case can read its parent account</td></tr>
+</tbody></table></div>
+<p><b>Public groups</b> are the building block for most sharing rules: a named set of users, roles, roles-and-subordinates and other groups.</p>
+<h3>Implicit sharing</h3>
+<ul>
+<li><b>Parent implicit</b>: if you can see a Contact, Opportunity or Case, you get read access to its Account.</li>
+<li><b>Child implicit</b>: the Account owner gets access to the account's child records, at the level set on the owner's role ("Opportunity Access", "Case Access", "Contact Access").</li>
+<li>Master-detail children always inherit from the master.</li>
+</ul>
+
+<h2>Restriction and scoping rules</h2>
+<p><b>Restriction rules</b> work in the opposite direction from sharing: even if sharing grants access, the user only sees records matching the rule's criteria. Example: contractors see only Tasks where <code>Type = 'Contractor'</code>. Available on custom objects, contracts, events, tasks, time sheets and a few others.</p>
+<p><b>Scoping rules</b> set a <i>default</i> filter on what users see in list views, search and lookups (e.g. "my region's accounts") without removing access.</p>
+
+<h2>Security in Apex</h2>
+<p>Apex runs in <b>system mode</b> by default: it ignores object permissions, FLS and (unless told otherwise) sharing. You choose how much security to enforce.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Tool</th><th>Enforces</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><code>with sharing</code></td><td>Record sharing for the running user</td><td><code>public with sharing class AccountService</code></td></tr>
+<tr><td><code>without sharing</code></td><td>Explicitly ignores sharing</td><td>Utility that must see all records</td></tr>
+<tr><td><code>inherited sharing</code></td><td>Uses the caller's mode (defaults to with sharing at an entry point)</td><td>Reusable selector classes</td></tr>
+<tr><td><code>WITH USER_MODE</code></td><td>Sharing + object + field permissions on a query</td><td><code>[SELECT Name FROM Account WITH USER_MODE]</code></td></tr>
+<tr><td><code>insert as user</code> / <code>AccessLevel.USER_MODE</code></td><td>Same, for DML</td><td><code>Database.update(recs, AccessLevel.USER_MODE)</code></td></tr>
+<tr><td><code>Security.stripInaccessible</code></td><td>Removes fields the user can't access instead of throwing</td><td>Sanitise records before returning them to a UI</td></tr>
+<tr><td><code>Schema...isAccessible()</code></td><td>Manual checks</td><td><code>Account.SObjectType.getDescribe().isUpdateable()</code></td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex" data-title="Enforcing user permissions">
+public with sharing class ContactController {
+
+    @AuraEnabled(cacheable=true)
+    public static List<Contact> recentContacts() {
+        // Throws a QueryException if the user lacks access to Contact or any field
+        return [SELECT Id, Name, Email FROM Contact
+                WITH USER_MODE ORDER BY CreatedDate DESC LIMIT 20];
+    }
+
+    @AuraEnabled
+    public static void save(List<Contact> contacts) {
+        // DML in user mode: respects CRUD, FLS and sharing
+        update as user contacts;
+    }
+
+    public static List<Account> forExport() {
+        List<Account> accs = [SELECT Id, Name, AnnualRevenue, Rating FROM Account LIMIT 100];
+        // Silently drop fields the running user can't read
+        SObjectAccessDecision d = Security.stripInaccessible(AccessType.READABLE, accs);
+        System.debug('Removed: ' + d.getRemovedFields());
+        return (List<Account>) d.getRecords();
+    }
+}
+</script>
+
+<h3>Apex managed sharing</h3>
+<p>For custom objects, define an <b>Apex Sharing Reason</b> (Object Manager → the object → Apex Sharing Reasons) so your shares survive owner changes and are identifiable. Then insert share rows.</p>
+<script type="text/plain" data-lang="apex" data-title="Share each invoice with the approver selected on it">
+public without sharing class InvoiceSharing {
+    public static void shareWithApprovers(List<Invoice__c> invoices) {
+        List<Invoice__Share> shares = new List<Invoice__Share>();
+        for (Invoice__c inv : invoices) {
+            if (inv.Approver__c == null || inv.Approver__c == inv.OwnerId) continue;
+            shares.add(new Invoice__Share(
+                ParentId = inv.Id,
+                UserOrGroupId = inv.Approver__c,
+                AccessLevel = 'Edit',                                  // 'Read' or 'Edit'
+                RowCause = Schema.Invoice__Share.RowCause.Approver__c  // the Apex Sharing Reason
+            ));
+        }
+        // allOrNone = false: a share for an inactive user shouldn't fail the rest
+        Database.SaveResult[] results = Database.insert(shares, false);
+        for (Database.SaveResult r : results) {
+            if (!r.isSuccess()) System.debug(LoggingLevel.WARN, r.getErrors()[0].getMessage());
+        }
+    }
+}
+</script>
+<p>Standard objects use their own share objects (<code>AccountShare</code>, <code>OpportunityShare</code>, <code>CaseShare</code>) with object-specific access fields, and only the <code>Manual</code> row cause.</p>
+
+<h2>Debugging "I can't see it"</h2>
+<ol>
+<li><b>Is the field on the page?</b> Page layout or Dynamic Forms visibility rule. Not security, but the most common cause.</li>
+<li><b>Licence</b>: does the user's licence include the object?</li>
+<li><b>Object access</b>: Setup → Users → the user → <i>View Summary</i> (on the permission set assignments) shows the combined effect of profile + permission sets for each object and field.</li>
+<li><b>Field-level security</b>: same summary, or Object Manager → field → <i>Set Field-Level Security</i>.</li>
+<li><b>Record access</b>: on the record, <b>Sharing → View Sharing Hierarchy</b> shows who has access and why. Or query <code>UserRecordAccess</code>:</li>
+</ol>
+<script type="text/plain" data-lang="soql" data-title="Why can (or can't) a user see this record?">
+SELECT RecordId, HasReadAccess, HasEditAccess, HasDeleteAccess, MaxAccessLevel
+FROM UserRecordAccess
+WHERE UserId = '005XXXXXXXXXXXX'
+  AND RecordId = '001XXXXXXXXXXXX'
+</script>
+<script type="text/plain" data-lang="soql" data-title="Which permission sets give a user access to an object?">
+SELECT Parent.Label, Parent.IsOwnedByProfile, PermissionsRead, PermissionsEdit, PermissionsViewAllRecords
+FROM ObjectPermissions
+WHERE SobjectType = 'Invoice__c'
+  AND ParentId IN (SELECT PermissionSetId FROM PermissionSetAssignment WHERE AssigneeId = '005XXXXXXXXXXXX')
+</script>
+<ol start="6">
+<li><b>Restriction rules</b> filtering it out?</li>
+<li><b>Test as them</b>: Setup → Users → <i>Login</i> (requires "Administrators Can Log in as Any User" in Login Access Policies).</li>
+</ol>
+
+<h2>Org-level security</h2>
+<ul>
+<li><b>Multi-factor authentication</b> is required for UI logins. SSO via SAML or OpenID Connect can satisfy it.</li>
+<li><b>Session settings</b>: timeout, lock sessions to IP, require HttpOnly, clickjack protection.</li>
+<li><b>Network access</b>: trusted IP ranges (skip identity verification) vs <b>login IP ranges</b> on the profile (block logins from elsewhere).</li>
+<li><b>Health Check</b> (Setup → Health Check) scores settings against Salesforce's baseline.</li>
+<li><b>Setup Audit Trail</b>, <b>Login History</b>, <b>field history tracking</b>, and (with Shield) <b>Event Monitoring</b> and <b>Field Audit Trail</b> give you an audit record.</li>
+<li><b>Shield Platform Encryption</b> encrypts data at rest at the field and file level with tenant-managed keys.</li>
+</ul>
+</main>
+</body>
+</html>

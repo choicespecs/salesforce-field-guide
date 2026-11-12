@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sales &amp; Service processes — Salesforce Field Guide</title>
+<meta name="description" content="How Sales Cloud and Service Cloud model the business: leads and conversion, opportunities and stages, products and price books, quotes and forecasts; cases, queues, assignment and escalation, Omni-Channel, entitlements, Knowledge and channels.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="sales-service">
+<main class="content">
+<h1>Sales & Service processes</h1>
+<p class="lede">The standard objects encode a sales process and a support process. Knowing the intended flow helps you configure it, and explains a lot of built-in behaviour.</p>
+
+<h2>The sales lifecycle</h2>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  C[Campaign] --> L[Lead]
+  W[Web-to-Lead / import / API] --> L
+  L -- "qualify & convert" --> A[Account]
+  L --> CT[Contact]
+  L --> O[Opportunity]
+  O --> P["Products<br/>(line items)"]
+  O --> Q[Quote]
+  O -- "Closed Won" --> CO["Contract / Order<br/>/ onboarding"]
+</pre></div>
+
+<h3>Leads</h3>
+<ul>
+<li>Sources: web forms (<b>Web-to-Lead</b> generates an HTML form that posts into Salesforce), imports, marketing automation, API.</li>
+<li><code>Status</code> tracks qualification (Open → Working → Qualified / Unqualified). One status is flagged as the "converted" status.</li>
+<li><b>Lead assignment rules</b> route new leads to owners or queues.</li>
+</ul>
+<h3>Lead conversion</h3>
+<p>Converting a lead creates (or matches to existing) an <b>Account</b> and <b>Contact</b>, and optionally an <b>Opportunity</b>. The lead becomes read-only with <code>IsConverted = true</code>.</p>
+<ul>
+<li>Map custom lead fields to account, contact and opportunity fields in Object Manager → Lead → Fields → <b>Map Lead Fields</b>. Unmapped data is left behind on the converted lead.</li>
+<li>Campaign history and activities move to the contact.</li>
+<li>In Apex, use <code>Database.convertLead</code>:</li>
+</ul>
+<script type="text/plain" data-lang="apex" data-title="Convert a lead in Apex">
+LeadStatus converted = [SELECT ApiName FROM LeadStatus WHERE IsConverted = true LIMIT 1];
+
+Database.LeadConvert lc = new Database.LeadConvert();
+lc.setLeadId(leadId);
+lc.setConvertedStatus(converted.ApiName);
+lc.setDoNotCreateOpportunity(false);
+lc.setOpportunityName('ACME - New business');
+// lc.setAccountId(existingAccountId);   // merge into an existing account instead
+
+Database.LeadConvertResult r = Database.convertLead(lc);
+System.debug(r.getAccountId() + ' / ' + r.getContactId() + ' / ' + r.getOpportunityId());
+</script>
+
+<h3>Opportunities</h3>
+<ul>
+<li><b>Stages</b> are picklist values, each with a default <b>probability</b> and <b>forecast category</b> (Pipeline, Best Case, Commit, Closed, Omitted). Edit them in Object Manager → Opportunity → Fields → Stage.</li>
+<li><b>Sales processes</b> choose which stages each record type uses.</li>
+<li><code>IsClosed</code> and <code>IsWon</code> are derived from the stage's type (Open / Closed-Won / Closed-Lost).</li>
+<li><b>Opportunity Contact Roles</b> record who's involved (Decision Maker, Influencer…) and are the link between contacts and deals for campaign influence.</li>
+<li><b>Opportunity Teams</b> and <b>Splits</b> share credit across reps.</li>
+<li><b>Path</b> + <b>Kanban</b> list views are the standard way reps move deals through stages.</li>
+</ul>
+
+<h3>Products, price books and quotes</h3>
+<ol>
+<li>Create <code>Product2</code> records (the catalogue).</li>
+<li>Add each product to the <b>Standard Price Book</b> (required first) with a list price.</li>
+<li>Create custom price books (e.g. "EMEA 2027", "Partners") with their own <code>PricebookEntry</code> prices.</li>
+<li>On an opportunity, pick one price book, then add <b>Opportunity Products</b> (<code>OpportunityLineItem</code>) with quantity and sales price. The opportunity's <code>Amount</code> becomes the sum of line totals.</li>
+<li><b>Quotes</b> copy the line items, can be synced back to the opportunity, and generate PDFs from templates. Complex configuration, discounting and approvals call for CPQ / Revenue Cloud.</li>
+</ol>
+<script type="text/plain" data-lang="apex" data-title="Add a line item in Apex (tests need the standard price book)">
+Id stdPb = Test.isRunningTest() ? Test.getStandardPricebookId()
+                                : [SELECT Id FROM Pricebook2 WHERE IsStandard = true].Id;
+Product2 p = new Product2(Name = 'Widget', IsActive = true);
+insert p;
+PricebookEntry pbe = new PricebookEntry(Pricebook2Id = stdPb, Product2Id = p.Id, UnitPrice = 100, IsActive = true);
+insert pbe;
+
+Opportunity o = new Opportunity(Name = 'Deal', StageName = 'Prospecting', CloseDate = Date.today(), Pricebook2Id = stdPb);
+insert o;
+insert new OpportunityLineItem(OpportunityId = o.Id, PricebookEntryId = pbe.Id, Quantity = 5, UnitPrice = 90);
+</script>
+
+<h3>Forecasting and territories</h3>
+<ul>
+<li><b>Collaborative Forecasts</b> roll up opportunity amounts (or quantities, or splits) by forecast category, period and the forecast hierarchy (usually the role hierarchy). Managers can adjust subordinates' numbers.</li>
+<li><b>Enterprise Territory Management</b> assigns accounts to territories by rules (geography, industry, size) independently of the role hierarchy, and grants access accordingly.</li>
+</ul>
+
+<h2>The service lifecycle</h2>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  E[Email] --> CS[Case]
+  WF[Web form] --> CS
+  CH["Chat / messaging"] --> CS
+  PH[Phone] --> CS
+  CS -- "assignment rules" --> Q[Queue]
+  Q -- "Omni-Channel routing" --> AG[Agent]
+  AG -- "Knowledge, macros" --> RES[Resolve]
+  CS -. "milestones / escalation" .-> ESC[Escalate]
+  RES --> CL[Closed]
+</pre></div>
+
+<h3>Cases</h3>
+<ul>
+<li><code>Origin</code> records the channel; <code>Status</code> values are flagged open or closed; <code>Priority</code> drives routing and SLAs.</li>
+<li><b>Support processes</b> pick which statuses each case record type uses.</li>
+<li><b>Case Feed</b> shows emails, posts, calls and field changes in one timeline.</li>
+<li><b>Parent cases</b> group duplicates or related issues (<code>ParentId</code>).</li>
+</ul>
+
+<h3>Channels into cases</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Channel</th><th>How</th></tr></thead>
+<tbody>
+<tr><td>Email-to-Case</td><td>Customers email <code>support@acme.com</code>; a forwarding rule sends mail to a Salesforce routing address, which creates a case and threads replies by a reference token.</td></tr>
+<tr><td>Web-to-Case</td><td>A generated HTML form posts cases from your website.</td></tr>
+<tr><td>Messaging (in-app/web, SMS, WhatsApp)</td><td>Messaging sessions routed through Omni-Channel, optionally starting with a bot or Agentforce agent.</td></tr>
+<tr><td>Service Cloud Voice</td><td>Telephony integrated into the console, with transcription.</td></tr>
+<tr><td>Experience Cloud help centre</td><td>Customers search Knowledge and log cases themselves.</td></tr>
+</tbody></table></div>
+
+<h3>Routing and SLAs</h3>
+<div class="defs">
+<div><b>Case assignment rules</b><p>Evaluate criteria on new cases and assign to a user or queue.</p></div>
+<div><b>Auto-response rules</b><p>Send the customer an acknowledgement email using a template chosen by criteria.</p></div>
+<div><b>Escalation rules</b><p>Reassign or notify when a case stays open past a time limit, respecting business hours.</p></div>
+<div><b>Omni-Channel</b><p>Pushes work to agents based on their <b>presence status</b> and <b>capacity</b>. Queue-based routing sends from queues; <b>skills-based</b> routing matches case attributes (language, product) to agent skills.</p></div>
+<div><b>Entitlements & milestones</b><p>An entitlement says what support a customer gets; an <b>entitlement process</b> defines milestones (First Response within 1 hour, Resolution within 1 business day) with warning and violation actions.</p></div>
+<div><b>Business hours & holidays</b><p>Used by escalation rules, milestones and <code>BusinessHours.diff()</code> in Apex.</p></div>
+</div>
+
+<h3>Agent productivity</h3>
+<ul>
+<li><b>Service Console</b>: a tabbed Lightning app showing a case, its contact and account side by side, with a utility bar.</li>
+<li><b>Knowledge</b>: articles with versions, publication status, data categories for visibility, and channels (internal, customer, partner, public). Attach articles to cases.</li>
+<li><b>Macros</b> run several actions with one click (send templated email, update status, post to feed).</li>
+<li><b>Quick Text</b>: reusable snippets inserted into emails and chats.</li>
+<li><b>Case merge</b> combines duplicates.</li>
+</ul>
+
+<h2>Activities and email</h2>
+<ul>
+<li><b>Tasks</b> (to-dos, logged calls, emails) and <b>Events</b> (calendar) relate to a person (<code>WhoId</code>: Lead or Contact) and a thing (<code>WhatId</code>: Account, Opportunity, Case, custom object).</li>
+<li>With <b>Shared Activities</b>, one activity can relate to up to 50 contacts (stored in <code>TaskRelation</code>/<code>EventRelation</code>).</li>
+<li><b>Einstein Activity Capture</b> syncs email and calendar from Gmail/Outlook; captured items aren't always stored as standard activity records, which affects reporting.</li>
+</ul>
+</main>
+</body>
+</html>

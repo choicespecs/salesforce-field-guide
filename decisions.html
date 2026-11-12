@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Which one do I pick? — Salesforce Field Guide</title>
+<meta name="description" content="Decision tables for common Salesforce design choices: Flow vs Apex, lookup vs master-detail, roll-ups, configuration storage, async Apex types, data tools, integration patterns, UI options and access control.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="decisions">
+<main class="content">
+<h1>Which one do I pick?</h1>
+<p class="lede">The design questions that come up every week, answered as tables. Each links to the chapter with the details.</p>
+
+<h2>Flow or Apex?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Situation</th><th>Pick</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Set fields on the record being saved</td><td>Before-save Flow</td><td>Fast, no DML, admin-maintainable</td></tr>
+<tr><td>Create/update related records with straightforward logic</td><td>After-save Flow</td><td>Visible to admins; bulkified automatically</td></tr>
+<tr><td>Guided UI for users</td><td>Screen Flow (embed LWCs where needed)</td><td>Fast to build and change</td></tr>
+<tr><td>Complex logic, many branches, reusable services</td><td>Apex</td><td>Easier to test, review, refactor and version</td></tr>
+<tr><td>Processing hundreds of thousands of records</td><td>Batch Apex</td><td>Chunked with fresh limits per chunk</td></tr>
+<tr><td>Callouts with complex request/response handling</td><td>Apex (Queueable)</td><td>Full control over HTTP, JSON, retries</td></tr>
+<tr><td>Validation that needs other records</td><td>Apex trigger or Flow with Custom Error</td><td>Validation rules can't query</td></tr>
+<tr><td>Flow needs one thing it can't do</td><td>Flow + invocable Apex action</td><td>Keep the process in Flow, the hard part in code</td></tr>
+<tr><td>The object already has heavy Apex triggers</td><td>Apex</td><td>One tool per object keeps the order of execution understandable</td></tr>
+</tbody></table></div>
+<p>Details: <a href="flow.html">Flow</a>, <a href="triggers.html">Triggers</a>.</p>
+
+<h2>Lookup or master-detail?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Need</th><th>Pick</th></tr></thead>
+<tbody>
+<tr><td>Child can't exist without the parent; delete together</td><td>Master-detail</td></tr>
+<tr><td>Roll-up summary fields</td><td>Master-detail (or a roll-up via Flow/Apex on a lookup)</td></tr>
+<tr><td>Child needs its own owner and sharing</td><td>Lookup</td></tr>
+<tr><td>Relationship is optional</td><td>Lookup</td></tr>
+<tr><td>Child is a standard object</td><td>Lookup (standard objects can't be details)</td></tr>
+<tr><td>Many-to-many</td><td>Junction object with two master-details</td></tr>
+<tr><td>Parent has huge numbers of children with frequent updates</td><td>Consider lookup — master-detail locks the parent during child saves and roll-up recalculation</td></tr>
+</tbody></table></div>
+<p>Details: <a href="data-model.html">Data model</a>.</p>
+
+<h2>How do I roll up child data?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Option</th><th>Works on</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Roll-up summary field</td><td>Master-detail</td><td>Real-time, no code, COUNT/SUM/MIN/MAX with filters</td></tr>
+<tr><td>Record-triggered Flow</td><td>Lookups</td><td>Needs flows on create, update, delete of the child</td></tr>
+<tr><td>Apex trigger with an aggregate query</td><td>Lookups</td><td>Most control; handle re-parenting and deletes (<a href="triggers.html">example</a>)</td></tr>
+<tr><td>Scheduled batch</td><td>Any</td><td>When "nightly" is fresh enough and volumes are large</td></tr>
+<tr><td>Report or dashboard</td><td>Any</td><td>When you only need to see it, not store it</td></tr>
+</tbody></table></div>
+
+<h2>Where do I store configuration?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Need</th><th>Pick</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Settings that deploy with code</td><td>Custom Metadata Type</td><td>Readable without SOQL limits; editable in Setup</td></tr>
+<tr><td>Per-user or per-profile switches</td><td>Hierarchy Custom Setting</td><td>Values are data — not deployed</td></tr>
+<tr><td>Feature access for some users</td><td>Custom Permission</td><td>Assign via permission set; check in formulas, Flow, Apex, LWC</td></tr>
+<tr><td>Endpoints, secrets, tokens</td><td>Named + External Credential</td><td>Never in code or custom metadata</td></tr>
+<tr><td>User-facing text, translatable</td><td>Custom Labels</td><td><code>System.Label.X</code>, <code>$Label.X</code>, <code>@salesforce/label/c.X</code></td></tr>
+<tr><td>Large reference tables users maintain</td><td>Custom object</td><td>Reportable, with sharing and history</td></tr>
+</tbody></table></div>
+
+<h2>Which async Apex?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Need</th><th>Pick</th></tr></thead>
+<tbody>
+<tr><td>Run after the transaction, with complex parameters</td><td>Queueable</td></tr>
+<tr><td>Callout from a trigger</td><td>Queueable with <code>Database.AllowsCallouts</code></td></tr>
+<tr><td>Retry later with a delay</td><td>Queueable enqueued with a delay</td></tr>
+<tr><td>Process millions of records</td><td>Batch Apex</td></tr>
+<tr><td>Run on a schedule</td><td>Schedulable (usually starts a batch) or a schedule-triggered Flow</td></tr>
+<tr><td>Decouple publisher from subscriber; many listeners</td><td>Platform Event</td></tr>
+<tr><td>Update a User alongside other records (mixed DML)</td><td>Queueable or <code>@future</code></td></tr>
+</tbody></table></div>
+<p>Details: <a href="async-apex.html">Async Apex</a>.</p>
+
+<h2>Which data tool?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Records</th><th>Pick</th></tr></thead>
+<tbody>
+<tr><td>Under 50,000; accounts, contacts, leads, custom objects; admins</td><td>Data Import Wizard</td></tr>
+<tr><td>Any object, any volume, delete/upsert/export</td><td>Data Loader</td></tr>
+<tr><td>Scripted, repeatable, in CI or sandbox seeding</td><td><code>sf data</code> commands</td></tr>
+<tr><td>Ongoing system-to-system sync</td><td>An integration (Bulk API, CDC, MuleSoft) — not a manual tool</td></tr>
+<tr><td>Regular full backups</td><td>Data Export Service or Salesforce Backup / a third-party backup tool</td></tr>
+</tbody></table></div>
+
+<h2>Which integration pattern?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Need</th><th>Pick</th></tr></thead>
+<tbody>
+<tr><td>External app reads/writes a few records</td><td>REST API (Composite for several)</td></tr>
+<tr><td>Nightly load of 2 million rows</td><td>Bulk API 2.0</td></tr>
+<tr><td>Salesforce needs live data from ERP when a user opens a record</td><td>Apex callout (via LWC) or Salesforce Connect</td></tr>
+<tr><td>Warehouse should mirror Salesforce changes</td><td>Change Data Capture + Pub/Sub API</td></tr>
+<tr><td>Tell several systems an order shipped</td><td>Platform Event</td></tr>
+<tr><td>Custom business endpoint</td><td>Apex REST</td></tr>
+<tr><td>Admins should call an API from Flow</td><td>External Services or HTTP Callout action</td></tr>
+</tbody></table></div>
+<p>Details: <a href="integration.html">APIs & callouts</a>, <a href="events.html">Events</a>.</p>
+
+<h2>Which UI option?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Need</th><th>Pick</th></tr></thead>
+<tbody>
+<tr><td>Show/hide fields based on values</td><td>Dynamic Forms visibility rules</td></tr>
+<tr><td>Guided multi-step process</td><td>Screen Flow</td></tr>
+<tr><td>Custom interactive component</td><td>LWC</td></tr>
+<tr><td>A simple record form</td><td><code>lightning-record-form</code> in an LWC, or a quick action</td></tr>
+<tr><td>Render a PDF</td><td>Visualforce <code>renderAs="pdf"</code> (or a document-generation app)</td></tr>
+<tr><td>Customer or partner portal</td><td>Experience Cloud with LWCs</td></tr>
+</tbody></table></div>
+
+<h2>How do I grant access?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Granting</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td>Object, field, app, tab, Apex class access</td><td>Permission set (bundled in a permission set group)</td></tr>
+<tr><td>Login hours, IP ranges, page layout assignment</td><td>Profile</td></tr>
+<tr><td>A persona ("Support Agent")</td><td>Permission set group, with muting if needed</td></tr>
+<tr><td>Temporary access</td><td>Permission set assignment with an expiration date</td></tr>
+<tr><td>Records owned by another team</td><td>Sharing rule (owner- or criteria-based)</td></tr>
+<tr><td>One record for one person</td><td>Manual share or a team</td></tr>
+<tr><td>Access computed from a field (e.g. approver)</td><td>Apex managed sharing</td></tr>
+<tr><td>Hide records despite sharing</td><td>Restriction rule</td></tr>
+</tbody></table></div>
+<p>Details: <a href="security.html">Security & sharing</a>.</p>
+</main>
+</body>
+</html>

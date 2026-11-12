@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Glossary — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce glossary: platform, admin, development, integration and AI terms with short definitions.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="glossary">
+<main class="content">
+<h1>Glossary</h1>
+<p class="lede">Platform vocabulary in one place. Type to filter.</p>
+<div class="toolbar"><input id="glQ" type="search" placeholder="Filter terms…" aria-label="Filter glossary"><span class="count" id="glCount"></span></div>
+<dl class="gloss">
+<div class="letter" data-letter="A" role="heading" aria-level="2">A</div>
+<div data-l="A"><dt>Agentforce</dt><dd>Salesforce&#x27;s platform for building AI agents that take actions.</dd></div>
+<div data-l="A"><dt>Anonymous Apex</dt><dd>Apex run once without saving a class (Developer Console or sf apex run).</dd></div>
+<div data-l="A"><dt>Apex</dt><dd>Salesforce&#x27;s server-side, Java-like programming language.</dd></div>
+<div data-l="A"><dt>Apex managed sharing</dt><dd>Sharing records programmatically by inserting rows into __Share objects.</dd></div>
+<div data-l="A"><dt>Apex REST</dt><dd>Custom REST endpoints written in Apex with @RestResource.</dd></div>
+<div data-l="A"><dt>API name</dt><dd>The name used in code and the API (Invoice__c), as opposed to the label shown to users.</dd></div>
+<div data-l="A"><dt>API version</dt><dd>Versioned platform behaviour; each release adds one (e.g., 64.0). Set per class/component.</dd></div>
+<div data-l="A"><dt>AppExchange</dt><dd>Salesforce&#x27;s app marketplace.</dd></div>
+<div data-l="A"><dt>Aura</dt><dd>The older Lightning component framework.</dd></div>
+<div data-l="A"><dt>AuraEnabled</dt><dd>Annotation exposing an Apex method to Lightning components.</dd></div>
+<div class="letter" data-letter="B" role="heading" aria-level="2">B</div>
+<div data-l="B"><dt>Batch Apex</dt><dd>Async Apex that processes large record sets in chunks, each with fresh limits.</dd></div>
+<div data-l="B"><dt>Before-save flow</dt><dd>A record-triggered flow that updates the triggering record before it&#x27;s saved, without DML.</dd></div>
+<div data-l="B"><dt>Bulk API 2.0</dt><dd>An asynchronous REST API for loading and extracting large volumes of records.</dd></div>
+<div data-l="B"><dt>Bulkification</dt><dd>Writing code that handles many records at once without per-record queries or DML.</dd></div>
+<div data-l="B"><dt>Business hours</dt><dd>Working-hour calendars used by escalation rules, milestones and BusinessHours in Apex.</dd></div>
+<div class="letter" data-letter="C" role="heading" aria-level="2">C</div>
+<div data-l="C"><dt>CDC</dt><dd>Change Data Capture: an event stream of record changes.</dd></div>
+<div data-l="C"><dt>Change Data Capture</dt><dd>Streaming record changes as events for external systems to consume.</dd></div>
+<div data-l="C"><dt>Change set</dt><dd>A UI-based bundle of metadata deployed between connected orgs.</dd></div>
+<div data-l="C"><dt>Code coverage</dt><dd>Percentage of Apex lines executed by tests; 75% required for production deploys.</dd></div>
+<div data-l="C"><dt>Composite API</dt><dd>A REST resource that runs several requests in one call, optionally all-or-none.</dd></div>
+<div data-l="C"><dt>Connected App / External Client App</dt><dd>An OAuth client definition for external systems calling Salesforce.</dd></div>
+<div data-l="C"><dt>Custom Metadata Type</dt><dd>Deployable configuration records (__mdt).</dd></div>
+<div data-l="C"><dt>Custom permission</dt><dd>A named flag granted through permission sets and checked in formulas, Flow, Apex and LWC.</dd></div>
+<div data-l="C"><dt>Custom Setting</dt><dd>Cached configuration data, optionally per user or profile.</dd></div>
+<div class="letter" data-letter="D" role="heading" aria-level="2">D</div>
+<div data-l="D"><dt>Data 360</dt><dd>Salesforce&#x27;s data unification platform, formerly Data Cloud.</dd></div>
+<div data-l="D"><dt>Data model object (DMO)</dt><dd>A harmonised entity in Data 360 that ingested data is mapped to.</dd></div>
+<div data-l="D"><dt>Data skew</dt><dd>Too many child records on one parent, or records owned by one user, causing locks and slowness.</dd></div>
+<div data-l="D"><dt>Debug log</dt><dd>A trace of a transaction&#x27;s execution, queries, DML and limit usage.</dd></div>
+<div data-l="D"><dt>Destructive changes</dt><dd>A manifest listing metadata to delete during a deployment.</dd></div>
+<div data-l="D"><dt>Dev Hub</dt><dd>The org that owns your scratch orgs and packages.</dd></div>
+<div data-l="D"><dt>DML</dt><dd>Data Manipulation Language: insert, update, upsert, delete, undelete, merge.</dd></div>
+<div data-l="D"><dt>Dynamic Forms</dt><dd>Placing individual fields on Lightning record pages with visibility rules.</dd></div>
+<div class="letter" data-letter="E" role="heading" aria-level="2">E</div>
+<div data-l="E"><dt>Einstein Trust Layer</dt><dd>Safeguards around generative AI calls: masking, zero retention, toxicity checks, audit.</dd></div>
+<div data-l="E"><dt>Entitlement</dt><dd>Defines the support a customer is owed, with milestones like response times.</dd></div>
+<div data-l="E"><dt>Experience site</dt><dd>A portal or website built with Experience Cloud.</dd></div>
+<div data-l="E"><dt>External Credential</dt><dd>The authentication part (OAuth, API key, etc.) referenced by Named Credentials.</dd></div>
+<div data-l="E"><dt>External ID</dt><dd>A field marked as another system&#x27;s key; indexed and usable for upsert.</dd></div>
+<div data-l="E"><dt>External Object</dt><dd>A virtual object (__x) whose data lives outside Salesforce.</dd></div>
+<div class="letter" data-letter="F" role="heading" aria-level="2">F</div>
+<div data-l="F"><dt>Field-history tracking</dt><dd>Recording old and new values of selected fields.</dd></div>
+<div data-l="F"><dt>Finalizer</dt><dd>Code attached to a Queueable that runs after it finishes, even if it failed.</dd></div>
+<div data-l="F"><dt>Flow</dt><dd>Salesforce&#x27;s declarative automation tool.</dd></div>
+<div data-l="F"><dt>FLS</dt><dd>Field-Level Security: whether a user can read or edit a field.</dd></div>
+<div data-l="F"><dt>Formula field</dt><dd>A read-only field calculated from other fields at read time.</dd></div>
+<div class="letter" data-letter="G" role="heading" aria-level="2">G</div>
+<div data-l="G"><dt>Global value set</dt><dd>A picklist value list shared by multiple fields.</dd></div>
+<div data-l="G"><dt>Governor limits</dt><dd>Per-transaction resource limits enforced by the multi-tenant platform.</dd></div>
+<div class="letter" data-letter="H" role="heading" aria-level="2">H</div>
+<div data-l="H"><dt>Hyperforce</dt><dd>Salesforce&#x27;s infrastructure running on public cloud providers.</dd></div>
+<div class="letter" data-letter="I" role="heading" aria-level="2">I</div>
+<div data-l="I"><dt>Implicit sharing</dt><dd>Built-in access, e.g. read access to an Account for owners of its contacts, opportunities or cases.</dd></div>
+<div data-l="I"><dt>Instance</dt><dd>The physical server pod your org runs on (e.g., NA123). Visible on trust.salesforce.com.</dd></div>
+<div data-l="I"><dt>Integration user</dt><dd>A dedicated, API-only user for a system integration, with minimal permissions.</dd></div>
+<div data-l="I"><dt>Invocable method</dt><dd>An Apex method annotated @InvocableMethod so Flow and agents can call it.</dd></div>
+<div class="letter" data-letter="J" role="heading" aria-level="2">J</div>
+<div data-l="J"><dt>Junction object</dt><dd>A custom object with two master-detail relationships, used to model many-to-many.</dd></div>
+<div class="letter" data-letter="K" role="heading" aria-level="2">K</div>
+<div data-l="K"><dt>Key prefix</dt><dd>The first three characters of a record Id, identifying its object.</dd></div>
+<div data-l="K"><dt>Knowledge</dt><dd>Service Cloud&#x27;s article base.</dd></div>
+<div class="letter" data-letter="L" role="heading" aria-level="2">L</div>
+<div data-l="L"><dt>LDS</dt><dd>Lightning Data Service: cached, security-aware record access for components without Apex.</dd></div>
+<div data-l="L"><dt>Lead conversion</dt><dd>Turning a Lead into an Account, Contact and optionally an Opportunity.</dd></div>
+<div data-l="L"><dt>Lightning App Builder</dt><dd>The drag-and-drop editor for Lightning record, app and home pages.</dd></div>
+<div data-l="L"><dt>Lightning Message Service</dt><dd>Publish/subscribe messaging between components on the same page.</dd></div>
+<div data-l="L"><dt>Lightning record page</dt><dd>A page built in Lightning App Builder with components, tabs and Dynamic Forms.</dd></div>
+<div data-l="L"><dt>Login As</dt><dd>Admin feature to log in as another user to test what they see (must be enabled).</dd></div>
+<div data-l="L"><dt>Lookup relationship</dt><dd>A loose link between records; the child keeps its own owner and sharing.</dd></div>
+<div data-l="L"><dt>LWC</dt><dd>Lightning Web Components, the standards-based UI framework.</dd></div>
+<div class="letter" data-letter="M" role="heading" aria-level="2">M</div>
+<div data-l="M"><dt>Managed package</dt><dd>A namespaced, IP-protected package, usually from AppExchange.</dd></div>
+<div data-l="M"><dt>Master-detail relationship</dt><dd>A tight link: the detail inherits sharing from the master and is deleted with it.</dd></div>
+<div data-l="M"><dt>Matching rule / duplicate rule</dt><dd>How to detect duplicate records, and what to do when one is found.</dd></div>
+<div data-l="M"><dt>Metadata</dt><dd>The configuration that describes your org: objects, fields, layouts, flows, code, permissions.</dd></div>
+<div data-l="M"><dt>My Domain</dt><dd>Your org&#x27;s unique subdomain, e.g. acme.my.salesforce.com.</dd></div>
+<div class="letter" data-letter="N" role="heading" aria-level="2">N</div>
+<div data-l="N"><dt>Named Credential</dt><dd>Stored endpoint and auth reference for outbound callouts.</dd></div>
+<div data-l="N"><dt>Namespace</dt><dd>A prefix (like SBQQ__) on a managed package&#x27;s components.</dd></div>
+<div class="letter" data-letter="O" role="heading" aria-level="2">O</div>
+<div data-l="O"><dt>Object</dt><dd>A database table. Standard objects ship with Salesforce; custom objects end in __c.</dd></div>
+<div data-l="O"><dt>Omni-Channel</dt><dd>Service Cloud routing that pushes work to available agents.</dd></div>
+<div data-l="O"><dt>Opportunity stage</dt><dd>A step in the sales process with an associated probability.</dd></div>
+<div data-l="O"><dt>Order of execution</dt><dd>The fixed sequence of steps Salesforce runs when a record is saved.</dd></div>
+<div data-l="O"><dt>Org</dt><dd>Your company&#x27;s instance of Salesforce: its data, metadata, users and configuration.</dd></div>
+<div data-l="O"><dt>OWD</dt><dd>Organization-Wide Defaults: the baseline record access for each object.</dd></div>
+<div class="letter" data-letter="P" role="heading" aria-level="2">P</div>
+<div data-l="P"><dt>package.xml</dt><dd>A manifest listing metadata to retrieve or deploy.</dd></div>
+<div data-l="P"><dt>Page layout</dt><dd>Controls the fields, related lists and buttons on a record page.</dd></div>
+<div data-l="P"><dt>Permission set</dt><dd>An additive bundle of permissions assignable to any number of users.</dd></div>
+<div data-l="P"><dt>Permission Set Group</dt><dd>A bundle of permission sets assigned as one, with optional muted permissions.</dd></div>
+<div data-l="P"><dt>Person Account</dt><dd>An Account that represents an individual, combining Account and Contact.</dd></div>
+<div data-l="P"><dt>Platform Event</dt><dd>A custom event message (__e) for publish/subscribe.</dd></div>
+<div data-l="P"><dt>Polymorphic field</dt><dd>A lookup that can point to several object types, such as WhoId, WhatId or OwnerId.</dd></div>
+<div data-l="P"><dt>Profile</dt><dd>Each user&#x27;s single base set of settings and (legacy) permissions.</dd></div>
+<div data-l="P"><dt>Prompt template</dt><dd>A reusable prompt grounded in Salesforce data, built in Prompt Builder.</dd></div>
+<div data-l="P"><dt>Pub/Sub API</dt><dd>A gRPC API for publishing and subscribing to platform events and CDC.</dd></div>
+<div data-l="P"><dt>Public group</dt><dd>A named set of users, roles and other groups used in sharing and queues.</dd></div>
+<div class="letter" data-letter="Q" role="heading" aria-level="2">Q</div>
+<div data-l="Q"><dt>Queue</dt><dd>A holding owner for records (Leads, Cases, custom objects) that a group of users works from.</dd></div>
+<div data-l="Q"><dt>Queueable</dt><dd>An async Apex job that takes complex parameters and can be chained.</dd></div>
+<div class="letter" data-letter="R" role="heading" aria-level="2">R</div>
+<div data-l="R"><dt>Record</dt><dd>A row in an object.</dd></div>
+<div data-l="R"><dt>Record type</dt><dd>Lets one object have different business processes, picklist values and layouts.</dd></div>
+<div data-l="R"><dt>Release</dt><dd>One of three annual platform upgrades: Spring, Summer, Winter.</dd></div>
+<div data-l="R"><dt>Replay ID</dt><dd>The position of an event in the event bus, used to resume a subscription.</dd></div>
+<div data-l="R"><dt>Restriction rule</dt><dd>Limits which records a user sees even when sharing would grant access.</dd></div>
+<div data-l="R"><dt>Role hierarchy</dt><dd>Grants managers access to records owned by users below them.</dd></div>
+<div data-l="R"><dt>Roll-up summary</dt><dd>A parent field that aggregates child records in a master-detail relationship.</dd></div>
+<div class="letter" data-letter="S" role="heading" aria-level="2">S</div>
+<div data-l="S"><dt>Salesforce DX</dt><dd>Source-driven development tooling: the sf CLI, project format, scratch orgs and packaging.</dd></div>
+<div data-l="S"><dt>Sandbox</dt><dd>A copy of production for development or testing.</dd></div>
+<div data-l="S"><dt>Schedulable</dt><dd>Apex that runs on a cron schedule.</dd></div>
+<div data-l="S"><dt>Scheduled path</dt><dd>Part of a record-triggered flow that runs at a time relative to a date field or the trigger.</dd></div>
+<div data-l="S"><dt>Scratch org</dt><dd>A disposable org created from source and a config file.</dd></div>
+<div data-l="S"><dt>Selective query</dt><dd>A query whose filter uses an index and returns few enough rows for the optimiser.</dd></div>
+<div data-l="S"><dt>Sharing rule</dt><dd>Extends record access to groups or roles based on owner or criteria.</dd></div>
+<div data-l="S"><dt>SLDS</dt><dd>Salesforce Lightning Design System: CSS framework and design guidelines.</dd></div>
+<div data-l="S"><dt>sObject</dt><dd>Apex&#x27;s generic type for any record. Account, Contact and Invoice__c are all sObjects.</dd></div>
+<div data-l="S"><dt>SOQL</dt><dd>Salesforce Object Query Language — queries records from one object and its relationships.</dd></div>
+<div data-l="S"><dt>SOSL</dt><dd>Salesforce Object Search Language — full-text search across objects.</dd></div>
+<div data-l="S"><dt>System mode</dt><dd>Apex&#x27;s default: ignores the running user&#x27;s object, field and (without &#x27;with sharing&#x27;) record permissions.</dd></div>
+<div class="letter" data-letter="T" role="heading" aria-level="2">T</div>
+<div data-l="T"><dt>Test class</dt><dd>An @IsTest class that verifies Apex and provides code coverage.</dd></div>
+<div data-l="T"><dt>Test level</dt><dd>Which tests run in a deployment: NoTestRun, RunSpecifiedTests, RunLocalTests, RunAllTestsInOrg.</dd></div>
+<div data-l="T"><dt>Topic (Agentforce)</dt><dd>A job an agent can do, with instructions and the actions it may use.</dd></div>
+<div data-l="T"><dt>Trailhead</dt><dd>Salesforce&#x27;s free learning platform.</dd></div>
+<div data-l="T"><dt>Transaction</dt><dd>A unit of work that succeeds or rolls back as a whole and shares one set of limits.</dd></div>
+<div data-l="T"><dt>Trigger</dt><dd>Apex that runs before or after DML on an object.</dd></div>
+<div class="letter" data-letter="U" role="heading" aria-level="2">U</div>
+<div data-l="U"><dt>Unified profile</dt><dd>A Data 360 record merging one person&#x27;s data from many sources via identity resolution.</dd></div>
+<div data-l="U"><dt>Unlocked package</dt><dd>A versioned, installable bundle of your own metadata.</dd></div>
+<div data-l="U"><dt>Upsert</dt><dd>Insert or update in one operation, matched by Id or an External ID.</dd></div>
+<div data-l="U"><dt>User mode</dt><dd>Running queries or DML with the user&#x27;s permissions enforced (WITH USER_MODE, as user).</dd></div>
+<div class="letter" data-letter="V" role="heading" aria-level="2">V</div>
+<div data-l="V"><dt>Validation deploy</dt><dd>A check-only deployment that runs tests without saving changes; can be quick-deployed later.</dd></div>
+<div data-l="V"><dt>Validation rule</dt><dd>A formula that blocks a save when it evaluates to true.</dd></div>
+<div data-l="V"><dt>Visualforce</dt><dd>The Classic-era page framework.</dd></div>
+<div class="letter" data-letter="W" role="heading" aria-level="2">W</div>
+<div data-l="W"><dt>Wire adapter</dt><dd>A reactive data source for LWC, such as getRecord or a cacheable Apex method.</dd></div>
+</dl>
+</main>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reports &amp; dashboards — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce reporting in depth: report formats, standard and custom report types, filters and filter logic, cross filters, buckets, row-level and summary formulas, joined reports, dashboards, dynamic dashboards, subscriptions and SOQL equivalents.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="reports">
+<main class="content">
+<h1>Reports & dashboards</h1>
+<p class="lede">Reports are saved queries with grouping and formatting; dashboards are charts built on reports. Both respect the viewer's security.</p>
+
+<h2>Report formats</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Format</th><th>Shape</th><th>Use for</th></tr></thead>
+<tbody>
+<tr><td>Tabular</td><td>A flat list of rows</td><td>Exports, call lists, simple lists. Can't feed most dashboard charts unless row-limited.</td></tr>
+<tr><td>Summary</td><td>Rows grouped by up to 3 fields, with subtotals</td><td>"Pipeline by stage", "cases by owner"</td></tr>
+<tr><td>Matrix</td><td>Grouped by rows <i>and</i> columns</td><td>"Opportunity amount by owner × quarter"</td></tr>
+<tr><td>Joined</td><td>Several blocks, each from its own report type, sharing a grouping</td><td>"Opportunities and cases per account" side by side</td></tr>
+</tbody></table></div>
+<p>The report builder only shows formats implicitly: add a row grouping and it becomes Summary; add a column grouping and it becomes Matrix.</p>
+
+<h2>Report types</h2>
+<p>A report type decides <b>which objects</b> a report can use and <b>which records</b> appear. Standard report types exist for most objects. Create <b>custom report types</b> (Setup → Report Types) when you need custom objects, specific relationships or "without" logic.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Relationship choice</th><th>Returns</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td>A <b>with</b> B</td><td>Only A records that have at least one B (inner join)</td><td>Accounts with Opportunities → no accounts without deals</td></tr>
+<tr><td>A <b>with or without</b> B</td><td>All A records, plus B where it exists (outer join)</td><td>All accounts, with their opportunities if any</td></tr>
+</tbody></table></div>
+<p>Report types can go up to four objects deep (A → B → C → D). Add fields via lookup ("Add fields related via lookup") to bring in parent fields without adding a level.</p>
+<div class="callout"><b>"I can't find my field in the report"</b> almost always means the report type's field layout doesn't include it, or the user lacks field-level security. Edit the custom report type's layout to add new fields.</div>
+
+<h2>Filters</h2>
+<ul>
+<li><b>Standard filters</b>: Show Me (My / My team's / All), date field and range (e.g. Close Date = Current FQ).</li>
+<li><b>Field filters</b> with operators: equals, not equal, less than, contains, starts with, includes (multi-select), and relative dates like <code>LAST 90 DAYS</code>, <code>NEXT QUARTER</code>.</li>
+<li><b>Filter logic</b>: <code>(1 AND 2) OR 3</code>.</li>
+<li><b>Cross filters</b>: "Accounts <i>with</i> / <i>without</i> Cases", optionally with sub-filters ("without Cases where Status = Open"). The classic answer to "show me accounts with no activity".</li>
+<li><b>Row limit filters</b>: "Top 10 accounts by revenue".</li>
+<li>Field-to-field filters: compare two fields (e.g. Close Date &lt; Created Date) in the filter panel.</li>
+</ul>
+
+<h2>Calculated values</h2>
+<h3>Bucket fields</h3>
+<p>Group values into categories without creating a field: Annual Revenue into <i>Small</i> (&lt; 1M), <i>Mid</i> (1M–50M), <i>Large</i> (&gt; 50M); or industries into sectors. Up to 5 buckets per report.</p>
+<h3>Row-level formulas</h3>
+<p>One per report; calculated per row.</p>
+<script type="text/plain" data-lang="formula" data-title="Days to close (row-level)">
+CLOSE_DATE - DATEVALUE(CREATED_DATE)
+</script>
+<h3>Summary formulas</h3>
+<p>Calculated on grouped totals. Use <code>PARENTGROUPVAL</code> for percent-of-total and <code>PREVGROUPVAL</code> for period-over-period.</p>
+<script type="text/plain" data-lang="formula" data-title="Win rate per group">
+WON:SUM / CLOSED:SUM
+</script>
+<script type="text/plain" data-lang="formula" data-title="Share of the grand total">
+AMOUNT:SUM / PARENTGROUPVAL(AMOUNT:SUM, GRAND_SUMMARY)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Growth vs previous month (grouped by Close Date by month)">
+(AMOUNT:SUM - PREVGROUPVAL(AMOUNT:SUM, CLOSE_DATE)) / PREVGROUPVAL(AMOUNT:SUM, CLOSE_DATE)
+</script>
+
+<h2>Useful report recipes</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Question</th><th>Report</th></tr></thead>
+<tbody>
+<tr><td>Which accounts have no open opportunities?</td><td>Accounts report, cross filter <i>Accounts without Opportunities</i> where Closed = False</td></tr>
+<tr><td>Pipeline by stage this quarter</td><td>Opportunities, Close Date = Current FQ, IsClosed = False, group by Stage, sum Amount; funnel chart</td></tr>
+<tr><td>Case backlog by age</td><td>Cases, Status ≠ Closed, bucket on Age (0–2, 3–7, 8–30, 30+ days), group by Owner</td></tr>
+<tr><td>Leads not touched in 30 days</td><td>Leads, Last Activity &lt; LAST 30 DAYS or blank, IsConverted = False</td></tr>
+<tr><td>Field changes over time</td><td>"Opportunity History" or "Opportunity Field History" report type</td></tr>
+<tr><td>Trend of a metric (e.g. weekly open cases)</td><td><b>Reporting snapshot</b>: a scheduled job copies report results into a custom object, which you then report on</td></tr>
+</tbody></table></div>
+
+<h2>Dashboards</h2>
+<ul>
+<li>Each component (chart, gauge, metric, table) is driven by one <b>source report</b> (summary or matrix, or tabular with a row limit).</li>
+<li>Up to 25 components per dashboard; dashboard filters (up to 5) apply to all components that share the field.</li>
+<li><b>Running user</b>: a dashboard runs as a specified user (everyone sees that user's data) or as the <b>logged-in user</b> (a <i>dynamic dashboard</i> — each viewer sees their own data). Dynamic dashboards are limited per edition.</li>
+<li>Dashboards refresh on demand or on a schedule; data isn't live between refreshes.</li>
+<li>Embed a dashboard on a home or record page with the Dashboard component, or a single report chart on a record page with the Report Chart component (filtered to the record).</li>
+</ul>
+
+<h2>Sharing and subscriptions</h2>
+<ul>
+<li>Reports and dashboards live in <b>folders</b>. Share folders with users, groups or roles as Viewer, Editor or Manager. Private reports live in "Private Reports".</li>
+<li><b>Subscribe</b> to a report or dashboard to get it by email on a schedule, optionally only when conditions are met (e.g. open P1 cases &gt; 0).</li>
+<li>Report results always respect the <b>viewer's</b> record and field access, except dashboards running as a fixed user.</li>
+</ul>
+
+<h2>Reports vs SOQL</h2>
+<p>Reports are for people; SOQL is for code. Equivalent logic for the pipeline report:</p>
+<script type="text/plain" data-lang="soql" data-title="Pipeline by stage in SOQL">
+SELECT StageName, COUNT(Id) deals, SUM(Amount) pipeline
+FROM Opportunity
+WHERE IsClosed = false AND CloseDate = THIS_FISCAL_QUARTER
+GROUP BY StageName
+ORDER BY SUM(Amount) DESC
+</script>
+<p>Developers can run a report from Apex with the <code>Reports</code> namespace (<code>Reports.ReportManager.runReport(reportId, true)</code>), and from outside through the Analytics REST API (<code>/services/data/vXX.X/analytics/reports/{id}</code>).</p>
+<p>For analytics beyond these limits (millions of rows, data from other systems, advanced visualisation), look at CRM Analytics or Tableau (<a href="catalog.html">catalog</a>).</p>
+</main>
+</body>
+</html>

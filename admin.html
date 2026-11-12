@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Admin essentials — Salesforce Field Guide</title>
+<meta name="description" content="Day-to-day Salesforce administration: users and licences, Lightning apps and pages, list views, data import and export, duplicate management, queues, email, audit trail, debug logs and change management.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="admin">
+<main class="content">
+<h1>Admin essentials</h1>
+<p class="lede">The everyday tasks behind a well-run org: managing users, shaping the UI, moving data in and out, and keeping track of what changed.</p>
+
+<h2>Users</h2>
+<h3>Creating a user</h3>
+<ol>
+<li>Setup → Users → <b>New User</b>.</li>
+<li>Username must be unique across <i>all</i> Salesforce orgs and look like an email (it doesn't have to be a real mailbox): <code>jane.doe@acme.com.uat</code> is fine for a sandbox.</li>
+<li>Choose the <b>user licence</b> and a <b>profile</b> (ideally a minimal one).</li>
+<li>Set the <b>role</b> for record visibility.</li>
+<li>Save, then assign <b>permission set groups / permission sets</b> and any <b>permission set licences</b>.</li>
+</ol>
+<p>Bulk-create users with Data Loader (insert on <code>User</code>) or the <code>sf</code> CLI: <code>sf org create user --definition-file config/user-def.json</code> for scratch orgs.</p>
+<h3>Lifecycle</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Action</th><th>Effect</th><th>When</th></tr></thead>
+<tbody>
+<tr><td>Freeze</td><td>Blocks login immediately; licence still used</td><td>Urgent offboarding while you reassign records</td></tr>
+<tr><td>Deactivate</td><td>Frees the licence; user's records remain and stay owned by them</td><td>Normal offboarding</td></tr>
+<tr><td>Delete</td><td>Not possible</td><td>Users can never be deleted, only deactivated</td></tr>
+<tr><td>Reset password</td><td>Emails a reset link</td><td>Support requests</td></tr>
+<tr><td>Login As</td><td>Log in as the user to see what they see</td><td>Debugging access (enable in Login Access Policies)</td></tr>
+</tbody></table></div>
+<div class="callout"><b>Before deactivating</b>, reassign open records (Setup → Mass Transfer Records for accounts/leads; Data Loader for others), check whether they're a default case owner, lead owner, workflow/flow email recipient, or the running user of a scheduled job or dashboard. Deactivating the running user of a scheduled flow breaks it.</div>
+
+<h2>Apps, tabs and pages</h2>
+<div class="defs">
+<div><b>Lightning app</b><p>A named set of tabs (navigation items) with branding and utility bar. App Manager → New Lightning App. Assign to profiles.</p></div>
+<div><b>Tab</b><p>Every custom object needs a tab to appear in navigation. Tab visibility (Default On / Default Off / Hidden) is set in profiles and permission sets.</p></div>
+<div><b>Lightning App Builder</b><p>Build record pages, app pages and home pages from components. Activate a record page per org default, app, record type and profile.</p></div>
+<div><b>Utility bar</b><p>The footer of an app: notes, recent items, a softphone, a screen flow, a custom LWC.</p></div>
+<div><b>Path</b><p>A stage-by-stage guide on a record page with key fields and guidance for each picklist value.</p></div>
+<div><b>Quick actions</b><p>Buttons that create related records, update fields, log calls or launch flows/LWCs. Object-specific or global.</p></div>
+</div>
+
+<h2>List views</h2>
+<ul>
+<li>Filter by owner (<i>My</i>, <i>All</i>, <i>My team's</i>, a queue), field criteria with filter logic (<code>1 AND (2 OR 3)</code>).</li>
+<li>Share with all users, groups or roles. Pin a default list view.</li>
+<li>Display as table, <b>Kanban</b> (drag records between picklist columns), or split view.</li>
+<li>Inline-edit fields directly in the list view, and select several rows to edit a field on all of them at once.</li>
+</ul>
+
+<h2>Importing and exporting data</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Tool</th><th>Volume</th><th>Objects</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Data Import Wizard</td><td>Up to 50,000 records</td><td>Accounts, contacts, leads, solutions, campaign members, person accounts, custom objects</td><td>In Setup. Duplicate matching, can trigger workflow/automation or not.</td></tr>
+<tr><td>Data Loader</td><td>Up to millions</td><td>All objects</td><td>Desktop app and CLI. Insert, update, upsert, delete, hard delete, export, export all (incl. deleted). Bulk API option for large jobs.</td></tr>
+<tr><td><code>sf data</code> commands</td><td>Any</td><td>All</td><td>Scriptable; good for seeding sandboxes and CI. See <a href="devops.html">DevOps</a>.</td></tr>
+<tr><td>Data Export Service</td><td>Whole org</td><td>All</td><td>Setup → Data Export. Weekly or monthly CSV zip backup.</td></tr>
+<tr><td>Reports → Export</td><td>Report rows</td><td>Reportable objects</td><td>Quick extracts for users.</td></tr>
+</tbody></table></div>
+<h3>A safe data load, step by step</h3>
+<ol>
+<li><b>Export first</b>: back up the records you'll touch (Data Loader export with IDs).</li>
+<li><b>Prepare the file</b>: one column per field, API names as headers, dates as <code>YYYY-MM-DD</code>, datetimes in ISO 8601 UTC, checkboxes as <code>true/false</code>, picklists using API values.</li>
+<li><b>Use External IDs</b> to relate records without looking up Salesforce IDs: set <code>Account.ERP_Id__c</code> on accounts, then load contacts with a column mapped to <code>Account:ERP_Id__c</code>.</li>
+<li><b>Think about automation</b>: flows, triggers, validation rules and emails fire on loads. Use a bypass custom permission for the loading user, or temporarily deactivate rules.</li>
+<li><b>Load a small sample</b> (10 rows) and check the results, success file and error file.</li>
+<li><b>Tune batch size</b>: lower it (e.g. 50) when triggers hit limits or you see <code>UNABLE_TO_LOCK_ROW</code>.</li>
+<li><b>Verify</b> with a report or a query count.</li>
+</ol>
+<script type="text/plain" data-lang="text" data-title="contacts.csv — relating to accounts by external ID">
+FirstName,LastName,Email,Account:ERP_Id__c,LeadSource
+Ada,Lovelace,ada@example.com,ERP-1001,Web
+Alan,Turing,alan@example.com,ERP-1002,Partner Referral
+</script>
+
+<h2>Duplicate management</h2>
+<p>A <b>matching rule</b> defines how to compare records (exact or fuzzy on name, email, phone, address). A <b>duplicate rule</b> says what to do when a match is found: <b>allow with alert</b>, <b>allow and report</b>, or <b>block</b>, and for which users. Standard rules for accounts, contacts and leads exist out of the box. Duplicate rules run on UI and API saves; Apex and Data Loader saves can be configured to respect them (<code>Database.DMLOptions.DuplicateRuleHeader</code>).</p>
+
+<h2>Queues and assignment</h2>
+<ul>
+<li>A <b>queue</b> can own Leads, Cases, and custom objects (and some others). Members work records from the queue's list view, taking ownership.</li>
+<li><b>Lead and case assignment rules</b> route new records to users or queues by criteria. Only one rule per object is active; entries are evaluated in order.</li>
+<li><b>Omni-Channel</b> pushes work to available agents by capacity and skills (see <a href="sales-service.html">Service</a>).</li>
+</ul>
+
+<h2>Email</h2>
+<ul>
+<li><b>Deliverability</b> (Setup → Deliverability): sandboxes default to "System email only", so emails from flows don't go out until you change it to "All email".</li>
+<li><b>Organization-wide email addresses</b>: shared "from" addresses like <code>support@acme.com</code>, which must be verified.</li>
+<li><b>Email templates</b>: Lightning email templates (with merge fields like <code>{{{Recipient.FirstName}}}</code>) or Classic (Text, HTML, Visualforce).</li>
+<li><b>Email-to-Case</b> and <b>Enhanced Email</b> store emails as <code>EmailMessage</code> records.</li>
+<li>Set up <b>DKIM</b> and SPF so mail from Salesforce isn't treated as spam.</li>
+</ul>
+
+<h2>Auditing and monitoring</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Tool</th><th>Shows</th><th>Retention</th></tr></thead>
+<tbody>
+<tr><td>Setup Audit Trail</td><td>Every Setup change and who made it</td><td>180 days in UI (export for longer)</td></tr>
+<tr><td>Field History Tracking</td><td>Old and new values of tracked fields</td><td>18 months (longer with Field Audit Trail)</td></tr>
+<tr><td>Login History</td><td>Logins, IP, browser, success/failure</td><td>6 months</td></tr>
+<tr><td>Debug logs</td><td>Execution detail for a user or process</td><td>Trace flags last up to 24 hours; logs count against a 1,000 MB org limit</td></tr>
+<tr><td>Apex Jobs / Scheduled Jobs / Paused Flows</td><td>Async work and its status</td><td>—</td></tr>
+<tr><td>Event Monitoring (Shield)</td><td>Report exports, API calls, page views, logins</td><td>Event log files</td></tr>
+</tbody></table></div>
+
+<h3>Debug logs</h3>
+<ol>
+<li>Setup → Debug Logs → <b>New</b> trace flag for the user (or Automated Process, or a platform integration user).</li>
+<li>Pick a debug level: for Apex debugging set <i>Apex Code = FINEST</i>, <i>Database = INFO</i>, <i>Workflow = INFO</i> (Flow also logs under Workflow).</li>
+<li>Reproduce the issue, then open the log. Search for <code>FATAL_ERROR</code>, <code>EXCEPTION_THROWN</code>, <code>VALIDATION_FAIL</code>, <code>FLOW_ELEMENT_ERROR</code>, <code>USER_DEBUG</code>.</li>
+<li>The <code>LIMIT_USAGE_FOR_NS</code> block at the end shows how close the transaction came to each limit.</li>
+</ol>
+<p>Logs over 20 MB are truncated. Lower the noisy categories (e.g. <i>System</i>, <i>Visualforce</i>) to <code>NONE</code>.</p>
+
+<h2>Change management for admins</h2>
+<ul>
+<li>Build in a sandbox, never directly in production (except for low-risk items like list views and reports).</li>
+<li>Move changes with <b>change sets</b> (Setup → Outbound Change Sets → upload to production → deploy from Inbound Change Sets) or <b>DevOps Center</b>, which tracks work items and commits to Git for you.</li>
+<li>Write a short description on every field, flow and validation rule. The next admin will thank you.</li>
+<li>Check <b>Where is this used?</b> before deleting fields. Deleted fields sit in the Recycle Bin for 15 days, then are gone along with their data.</li>
+</ul>
+</main>
+</body>
+</html>

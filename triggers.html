@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Triggers — Salesforce Field Guide</title>
+<meta name="description" content="Apex triggers in depth: events, context variables, the one-trigger-per-object handler pattern, bulkification, recursion control, bypass switches, addError, and six worked trigger examples.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="triggers">
+<main class="content">
+<h1>Triggers</h1>
+<p class="lede">A trigger is Apex that runs before or after records are inserted, updated, deleted or undeleted. Triggers always receive records in batches of up to 200, so every trigger must be written for a list.</p>
+
+<h2>Events and context</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Event</th><th>Use for</th><th>Can change <code>Trigger.new</code>?</th></tr></thead>
+<tbody>
+<tr><td><code>before insert</code></td><td>Default and validate fields on new records</td><td>Yes — no DML needed</td></tr>
+<tr><td><code>before update</code></td><td>Derive fields, validate changes</td><td>Yes</td></tr>
+<tr><td><code>before delete</code></td><td>Block deletes (<code>addError</code>)</td><td>—</td></tr>
+<tr><td><code>after insert</code></td><td>Create related records (needs the new Id)</td><td>No (read-only)</td></tr>
+<tr><td><code>after update</code></td><td>Update related records, publish events, enqueue jobs</td><td>No</td></tr>
+<tr><td><code>after delete</code></td><td>Clean up related data, recalculate parents</td><td>—</td></tr>
+<tr><td><code>after undelete</code></td><td>Restore related data</td><td>No</td></tr>
+</tbody></table></div>
+<div class="tablewrap"><table>
+<thead><tr><th>Variable</th><th>Contents</th><th>Available in</th></tr></thead>
+<tbody>
+<tr><td><code>Trigger.new</code></td><td>List of new record versions</td><td>insert, update, undelete</td></tr>
+<tr><td><code>Trigger.old</code></td><td>List of old versions</td><td>update, delete</td></tr>
+<tr><td><code>Trigger.newMap</code></td><td>Id → new record</td><td>before update, after insert/update/undelete</td></tr>
+<tr><td><code>Trigger.oldMap</code></td><td>Id → old record</td><td>update, delete</td></tr>
+<tr><td><code>Trigger.operationType</code></td><td><code>System.TriggerOperation</code> enum: <code>BEFORE_INSERT</code>, <code>AFTER_UPDATE</code>…</td><td>all</td></tr>
+<tr><td><code>Trigger.isBefore</code>, <code>isAfter</code>, <code>isInsert</code>, <code>isUpdate</code>, <code>isDelete</code>, <code>isUndelete</code></td><td>Booleans</td><td>all</td></tr>
+<tr><td><code>Trigger.size</code></td><td>Number of records in this chunk</td><td>all</td></tr>
+<tr><td><code>Trigger.isExecuting</code></td><td>True if the current code was called from a trigger</td><td>any Apex</td></tr>
+</tbody></table></div>
+<div class="callout"><b>No <code>newMap</code> in before insert</b> — the records don't have IDs yet.</div>
+
+<h2>The handler pattern</h2>
+<p>Keep exactly <b>one trigger per object</b>, with no logic in it. It delegates to a handler class, which keeps order predictable and code testable.</p>
+<script type="text/plain" data-lang="apex" data-title="triggers/OpportunityTrigger.trigger">
+trigger OpportunityTrigger on Opportunity (
+    before insert, before update, before delete,
+    after insert, after update, after delete, after undelete
+) {
+    new OpportunityTriggerHandler().run();
+}
+</script>
+<script type="text/plain" data-lang="apex" data-title="classes/TriggerHandler.cls — a small reusable base class">
+public virtual class TriggerHandler {
+    // Bypass by handler name, e.g. during data loads or from other code
+    private static Set<String> bypassed = new Set<String>();
+    public static void bypass(String handlerName) { bypassed.add(handlerName); }
+    public static void clearBypass(String handlerName) { bypassed.remove(handlerName); }
+
+    public void run() {
+        String name = String.valueOf(this).substringBefore(':');
+        if (bypassed.contains(name) || FeatureManagement.checkPermission('Bypass_Triggers')) return;
+
+        switch on Trigger.operationType {
+            when BEFORE_INSERT  { beforeInsert(Trigger.new); }
+            when BEFORE_UPDATE  { beforeUpdate(Trigger.new, Trigger.oldMap); }
+            when BEFORE_DELETE  { beforeDelete(Trigger.old); }
+            when AFTER_INSERT   { afterInsert(Trigger.new); }
+            when AFTER_UPDATE   { afterUpdate(Trigger.new, Trigger.oldMap); }
+            when AFTER_DELETE   { afterDelete(Trigger.old); }
+            when AFTER_UNDELETE { afterUndelete(Trigger.new); }
+        }
+    }
+    protected virtual void beforeInsert(List<SObject> newList) {}
+    protected virtual void beforeUpdate(List<SObject> newList, Map<Id, SObject> oldMap) {}
+    protected virtual void beforeDelete(List<SObject> oldList) {}
+    protected virtual void afterInsert(List<SObject> newList) {}
+    protected virtual void afterUpdate(List<SObject> newList, Map<Id, SObject> oldMap) {}
+    protected virtual void afterDelete(List<SObject> oldList) {}
+    protected virtual void afterUndelete(List<SObject> newList) {}
+}
+</script>
+<script type="text/plain" data-lang="apex" data-title="classes/OpportunityTriggerHandler.cls">
+public with sharing class OpportunityTriggerHandler extends TriggerHandler {
+
+    protected override void beforeInsert(List<SObject> newList) {
+        OpportunityService.defaultCloseDate((List<Opportunity>) newList);
+    }
+
+    protected override void beforeUpdate(List<SObject> newList, Map<Id, SObject> oldMap) {
+        OpportunityService.requireLossReason((List<Opportunity>) newList, (Map<Id, Opportunity>) oldMap);
+    }
+
+    protected override void afterUpdate(List<SObject> newList, Map<Id, SObject> oldMap) {
+        List<Opportunity> justWon = new List<Opportunity>();
+        for (Opportunity o : (List<Opportunity>) newList) {
+            Opportunity old = (Opportunity) oldMap.get(o.Id);
+            if (o.IsWon && !old.IsWon) justWon.add(o);
+        }
+        if (!justWon.isEmpty()) OpportunityService.createOnboardingTasks(justWon);
+    }
+}
+</script>
+<p>Popular open-source frameworks (Kevin O'Hara's <i>sfdc-trigger-framework</i>, the <i>fflib</i> Apex Common domain layer, the Trigger Actions Framework driven by custom metadata) follow the same idea with more features. Pick one per org and use it everywhere.</p>
+
+<h2>Only act on real changes</h2>
+<p>Update triggers fire on every save, even when the fields you care about didn't change. Compare against <code>oldMap</code>:</p>
+<script type="text/plain" data-lang="apex">
+List<Account> changed = new List<Account>();
+for (Account a : (List<Account>) Trigger.new) {
+    Account old = (Account) Trigger.oldMap.get(a.Id);
+    if (a.BillingCountry != old.BillingCountry || a.OwnerId != old.OwnerId) {
+        changed.add(a);
+    }
+}
+</script>
+
+<h2>Recursion control</h2>
+<p>A trigger that updates records can cause itself (or another trigger that updates back) to fire again. Options, from simplest:</p>
+<ol>
+<li><b>Change detection</b> (above): the second run sees no change and does nothing. The most robust option.</li>
+<li><b>A static set of processed IDs</b>: skip records already handled in this transaction.</li>
+<li>Avoid a plain static Boolean "hasRun" flag: with batches over 200 records, the second chunk of 200 would be skipped.</li>
+</ol>
+<script type="text/plain" data-lang="apex" data-title="Process each record once per transaction">
+public class AccountSync {
+    private static Set<Id> processed = new Set<Id>();
+
+    public static void syncChanged(List<Account> accounts) {
+        List<Account> todo = new List<Account>();
+        for (Account a : accounts) {
+            if (processed.add(a.Id)) todo.add(a);   // add() returns false if already present
+        }
+        if (todo.isEmpty()) return;
+        // ... work on todo ...
+    }
+}
+</script>
+
+<h2>Worked examples</h2>
+<h3>1. Before insert/update: derive a field from the parent</h3>
+<script type="text/plain" data-lang="apex" data-title="Copy the account's region onto new or re-parented contacts">
+public static void setRegion(List<Contact> contacts, Map<Id, Contact> oldMap) {
+    Set<Id> accountIds = new Set<Id>();
+    List<Contact> todo = new List<Contact>();
+    for (Contact c : contacts) {
+        Boolean changed = oldMap == null || c.AccountId != oldMap.get(c.Id).AccountId;
+        if (c.AccountId != null && changed) { accountIds.add(c.AccountId); todo.add(c); }
+    }
+    if (todo.isEmpty()) return;
+    Map<Id, Account> accounts = new Map<Id, Account>(
+        [SELECT Id, Region__c FROM Account WHERE Id IN :accountIds]);
+    for (Contact c : todo) c.Region__c = accounts.get(c.AccountId)?.Region__c;
+    // before trigger: no DML — the changes are saved with the record
+}
+</script>
+<h3>2. Before update: validation that needs a query</h3>
+<script type="text/plain" data-lang="apex" data-title="Block closing an opportunity that has no line items">
+public static void requireProducts(List<Opportunity> opps, Map<Id, Opportunity> oldMap) {
+    Set<Id> closing = new Set<Id>();
+    for (Opportunity o : opps) {
+        if (o.IsWon && !oldMap.get(o.Id).IsWon) closing.add(o.Id);
+    }
+    if (closing.isEmpty()) return;
+    Set<Id> withProducts = new Set<Id>();
+    for (AggregateResult ar : [SELECT OpportunityId FROM OpportunityLineItem
+                               WHERE OpportunityId IN :closing GROUP BY OpportunityId]) {
+        withProducts.add((Id) ar.get('OpportunityId'));
+    }
+    for (Opportunity o : opps) {
+        if (closing.contains(o.Id) && !withProducts.contains(o.Id)) {
+            o.addError('Add at least one product before closing this opportunity as won.');
+        }
+    }
+}
+</script>
+<h3>3. After insert: create related records</h3>
+<script type="text/plain" data-lang="apex" data-title="Create a welcome case for each new customer account">
+public static void createWelcomeCases(List<Account> accounts) {
+    List<Case> cases = new List<Case>();
+    for (Account a : accounts) {
+        if (a.Type == 'Customer') {
+            cases.add(new Case(AccountId = a.Id, Subject = 'Welcome ' + a.Name,
+                               Origin = 'Internal', Priority = 'Medium'));
+        }
+    }
+    if (!cases.isEmpty()) insert cases;   // one DML for the whole batch
+}
+</script>
+<h3>4. After insert/update/delete/undelete: roll up over a lookup</h3>
+<script type="text/plain" data-lang="apex" data-title="Keep Account.Open_Cases__c in sync">
+public static void recountOpenCases(List<Case> newList, List<Case> oldList) {
+    Set<Id> accountIds = new Set<Id>();
+    for (Case c : newList ?? new List<Case>()) if (c.AccountId != null) accountIds.add(c.AccountId);
+    for (Case c : oldList ?? new List<Case>()) if (c.AccountId != null) accountIds.add(c.AccountId);
+    if (accountIds.isEmpty()) return;
+
+    Map<Id, Account> updates = new Map<Id, Account>();
+    for (Id accId : accountIds) updates.put(accId, new Account(Id = accId, Open_Cases__c = 0));
+    for (AggregateResult ar : [SELECT AccountId, COUNT(Id) n FROM Case
+                               WHERE AccountId IN :accountIds AND IsClosed = false
+                               GROUP BY AccountId]) {
+        updates.get((Id) ar.get('AccountId')).Open_Cases__c = (Integer) ar.get('n');
+    }
+    update updates.values();
+}
+// Call from after insert, after update (pass Trigger.old too, for re-parenting),
+// after delete (Trigger.old) and after undelete (Trigger.new).
+</script>
+<h3>5. Before delete: prevent deletes</h3>
+<script type="text/plain" data-lang="apex" data-title="Don't allow deleting accounts with invoices">
+public static void blockDeleteWithInvoices(List<Account> oldList) {
+    Set<Id> ids = new Map<Id, Account>(oldList).keySet();
+    Set<Id> withInvoices = new Set<Id>();
+    for (Invoice__c inv : [SELECT Account__c FROM Invoice__c WHERE Account__c IN :ids]) {
+        withInvoices.add(inv.Account__c);
+    }
+    for (Account a : oldList) {
+        if (withInvoices.contains(a.Id)) a.addError('This account has invoices and can\'t be deleted.');
+    }
+}
+</script>
+<h3>6. After update: hand off to async work</h3>
+<script type="text/plain" data-lang="apex" data-title="Sync changed accounts to an ERP without blocking the save">
+public static void queueErpSync(List<Account> accounts, Map<Id, Account> oldMap) {
+    Set<Id> changed = new Set<Id>();
+    for (Account a : accounts) {
+        Account old = oldMap.get(a.Id);
+        if (a.Name != old.Name || a.BillingStreet != old.BillingStreet) changed.add(a.Id);
+    }
+    if (!changed.isEmpty() && !System.isBatch() && !System.isFuture()) {
+        System.enqueueJob(new ErpAccountSyncJob(changed));   // callouts happen after commit
+    }
+}
+</script>
+
+<h2>Bypass switches</h2>
+<p>Data migrations and integrations often need automation off. Make it switchable without deployments:</p>
+<ul>
+<li><b>Custom permission</b> <code>Bypass_Triggers</code> assigned by permission set to the migration user (checked in the base class above).</li>
+<li><b>Hierarchy custom setting</b> with a checkbox per object, so you can turn off one object's triggers for one user.</li>
+<li><b>Custom metadata</b> listing active handlers (the Trigger Actions Framework approach).</li>
+<li><b>Static bypass</b> in code: <code>TriggerHandler.bypass('AccountTriggerHandler');</code> before a DML you don't want re-processed.</li>
+</ul>
+
+<h2>Triggers vs Flow on the same object</h2>
+<p>Both run in the same transaction. Before-save flows run before before-triggers; after-save flows run after after-triggers (see <a href="order-of-execution.html">order of execution</a>). Mixing them on one object makes behaviour harder to follow — many teams choose one tool per object, or keep complex objects in Apex and simple ones in Flow.</p>
+</main>
+</body>
+</html>

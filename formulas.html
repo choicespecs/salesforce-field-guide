@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Formulas &amp; validation rules — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce formula syntax and functions with worked examples of formula fields, validation rules, default values and cross-object formulas.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="formulas">
+<main class="content">
+<h1>Formulas & validation rules</h1>
+<p class="lede">The same Excel-like formula language powers formula fields, validation rules, default values, Flow formulas, report formulas and approval criteria. Learn it once, use it everywhere.</p>
+
+<h2>Syntax basics</h2>
+<ul>
+<li>Fields by API name: <code>Amount</code>, <code>Discount__c</code>. Parent fields with dots: <code>Account.Industry</code>, <code>Invoice__r.Status__c</code>.</li>
+<li>Operators: <code>+ - * / ^</code>, <code>&amp;</code> (concatenate text), <code>= == != &lt;&gt; &lt; &gt; &lt;= &gt;=</code>, <code>&amp;&amp;</code> and <code>||</code> (or the functions <code>AND()</code>, <code>OR()</code>).</li>
+<li>Text in double quotes: <code>"Closed Won"</code>. Comments: <code>/* like this */</code>.</li>
+<li>Picklists can't be compared directly: use <code>ISPICKVAL(StageName, "Closed Won")</code> or <code>TEXT(StageName) = "Closed Won"</code>.</li>
+<li>Global variables: <code>$User.Id</code>, <code>$User.Department</code>, <code>$Profile.Name</code>, <code>$UserRole.Name</code>, <code>$Permission.My_Custom_Permission</code>, <code>$Organization.Name</code>, <code>$Setup.My_Setting__c.Field__c</code>, <code>$CustomMetadata.Type__mdt.Record.Field__c</code>, <code>$Label.My_Label</code>.</li>
+<li>Blank handling: number formulas can treat blank fields as zero or as blank (an option on the formula field). <code>BLANKVALUE(field, default)</code> makes it explicit.</li>
+<li>Limits: 3,900 characters of formula text and 5,000 bytes compiled size (formulas that reference other formulas count their compiled size too).</li>
+</ul>
+
+<h2>Function reference</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Category</th><th>Functions</th></tr></thead>
+<tbody>
+<tr><td>Logic</td><td><code>IF(test, then, else)</code>, <code>CASE(expr, v1, r1, v2, r2, …, else)</code>, <code>AND</code>, <code>OR</code>, <code>NOT</code>, <code>ISBLANK</code>, <code>BLANKVALUE</code>, <code>NULLVALUE</code>, <code>ISNUMBER</code></td></tr>
+<tr><td>Picklists</td><td><code>ISPICKVAL(field, "value")</code>, <code>TEXT(picklist)</code>, <code>INCLUDES(multiselect, "value")</code>, <code>PRIORVALUE</code>, <code>ISCHANGED</code></td></tr>
+<tr><td>Change detection (validation rules, flows, defaults)</td><td><code>ISNEW()</code>, <code>ISCHANGED(field)</code>, <code>PRIORVALUE(field)</code>, <code>ISCLONE()</code></td></tr>
+<tr><td>Text</td><td><code>LEN</code>, <code>LEFT</code>, <code>RIGHT</code>, <code>MID</code>, <code>FIND</code>, <code>CONTAINS</code>, <code>BEGINS</code>, <code>SUBSTITUTE</code>, <code>TRIM</code>, <code>UPPER</code>, <code>LOWER</code>, <code>LPAD</code>, <code>RPAD</code>, <code>REGEX</code>, <code>TEXT</code>, <code>VALUE</code>, <code>BR()</code>, <code>HYPERLINK(url, label)</code>, <code>IMAGE(url, alt)</code>, <code>CASESAFEID</code></td></tr>
+<tr><td>Math</td><td><code>ROUND</code>, <code>CEILING</code>, <code>FLOOR</code>, <code>MOD</code>, <code>ABS</code>, <code>MAX</code>, <code>MIN</code>, <code>SQRT</code>, <code>EXP</code>, <code>LN</code>, <code>LOG</code>, <code>DISTANCE</code>, <code>GEOLOCATION</code></td></tr>
+<tr><td>Date & time</td><td><code>TODAY()</code>, <code>NOW()</code>, <code>DATE(y,m,d)</code>, <code>DATEVALUE(datetime)</code>, <code>DATETIMEVALUE</code>, <code>YEAR</code>, <code>MONTH</code>, <code>DAY</code>, <code>WEEKDAY</code> (1 = Sunday), <code>ADDMONTHS</code>, <code>ISOWEEK</code>, <code>ISOYEAR</code>, <code>TIMEVALUE</code>, <code>HOUR</code>, <code>MINUTE</code>, <code>UNIXTIMESTAMP</code></td></tr>
+<tr><td>Lookups (validation rules only)</td><td><code>VLOOKUP(field_to_return, field_on_lookup_object, lookup_value)</code>, <code>REGEX</code></td></tr>
+</tbody></table></div>
+
+<h2>Formula field examples</h2>
+<script type="text/plain" data-lang="formula" data-title="Days open (Number) on Case">
+IF(IsClosed,
+   DATEVALUE(ClosedDate) - DATEVALUE(CreatedDate),
+   TODAY() - DATEVALUE(CreatedDate))
+</script>
+<script type="text/plain" data-lang="formula" data-title="Deal size band (Text) on Opportunity">
+IF(Amount >= 1000000, "Enterprise",
+IF(Amount >= 100000,  "Large",
+IF(Amount >= 10000,   "Medium", "Small")))
+</script>
+<script type="text/plain" data-lang="formula" data-title="Priority score with CASE (Number)">
+CASE(TEXT(Priority),
+     "Critical", 100,
+     "High",      70,
+     "Medium",    40,
+     10)
++ IF(Account.Type = "Strategic", 25, 0)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Traffic light (Text) using IMAGE">
+IMAGE(
+  CASE(TEXT(Health__c),
+       "Green", "/img/samples/light_green.gif",
+       "Yellow", "/img/samples/light_yellow.gif",
+       "/img/samples/light_red.gif"),
+  TEXT(Health__c), 16, 16)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Link to a record's Account in another system (Text, HYPERLINK)">
+HYPERLINK("https://erp.example.com/customers/" & Account.ERP_Id__c, "Open in ERP", "_blank")
+</script>
+<script type="text/plain" data-lang="formula" data-title="Business days between two dates (Number) — excludes weekends">
+/* Weekdays between Start__c and End__c. 1900-01-08 is a Monday, used as an anchor. */
+(5 * FLOOR((End__c - DATE(1900, 1, 8)) / 7) + MIN(5, MOD(End__c - DATE(1900, 1, 8), 7)))
+-
+(5 * FLOOR((Start__c - DATE(1900, 1, 8)) / 7) + MIN(5, MOD(Start__c - DATE(1900, 1, 8), 7)))
+</script>
+<script type="text/plain" data-lang="formula" data-title="Full name with blanks handled (Text)">
+TRIM(BLANKVALUE(Salutation & " ", "") & FirstName & " " & LastName)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Next renewal date one year after close (Date)">
+ADDMONTHS(CloseDate, 12)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Age of a record in hours (Number)">
+ROUND((NOW() - CreatedDate) * 24, 1)
+</script>
+<div class="callout"><b>Formula fields are calculated when read.</b> They don't fire triggers or flows when their value "changes", they can't be indexed (unless deterministic and approved by Salesforce support), and cross-object formulas add query cost. If you need to trigger automation or filter big tables on a value, store it in a real field with Flow or Apex.</div>
+
+<h2>Validation rules</h2>
+<p>A validation rule is a formula that returns <b>true when the data is invalid</b>. When it's true, the save fails with your error message, shown at the top of the page or next to a field.</p>
+<div class="cols">
+  <div class="panel"><h4>When they run</h4><p>On every save — UI, API, Apex, Flow, Data Loader — after before-triggers (see <a href="order-of-execution.html">order of execution</a>).</p></div>
+  <div class="panel"><h4>What they can use</h4><p>The record's fields, parent fields, <code>ISNEW()</code>, <code>ISCHANGED()</code>, <code>PRIORVALUE()</code>, <code>$User</code>, <code>$Permission</code>, <code>VLOOKUP</code>, <code>REGEX</code>.</p></div>
+  <div class="panel"><h4>What they can't do</h4><p>Look at child records, query, or check other records being saved in the same batch. Use Apex for that.</p></div>
+</div>
+
+<h3>Examples</h3>
+<script type="text/plain" data-lang="formula" data-title="Amount required once an opportunity reaches Proposal or later">
+AND(
+  ISBLANK(Amount),
+  OR(ISPICKVAL(StageName, "Proposal/Price Quote"),
+     ISPICKVAL(StageName, "Negotiation/Review"),
+     ISPICKVAL(StageName, "Closed Won"))
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Loss reason required when Closed Lost">
+AND(ISPICKVAL(StageName, "Closed Lost"), ISBLANK(TEXT(Loss_Reason__c)))
+</script>
+<script type="text/plain" data-lang="formula" data-title="Close date can't be in the past on open opportunities">
+AND(NOT(IsClosed), CloseDate < TODAY(), ISCHANGED(CloseDate) || ISNEW())
+</script>
+<script type="text/plain" data-lang="formula" data-title="Stage can't move backwards">
+/* Compare positions in an ordered list of stages */
+AND(
+  ISCHANGED(StageName),
+  CASE(TEXT(StageName), "Prospecting",1, "Qualification",2, "Proposal/Price Quote",3, "Negotiation/Review",4, "Closed Won",5, 0)
+  <
+  CASE(TEXT(PRIORVALUE(StageName)), "Prospecting",1, "Qualification",2, "Proposal/Price Quote",3, "Negotiation/Review",4, "Closed Won",5, 0),
+  NOT($Permission.Bypass_Validation)
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="US phone number must have 10 digits">
+AND(
+  NOT(ISBLANK(Phone)),
+  BillingCountry = "US",
+  NOT(REGEX(Phone, "\\D*?(\\d\\D*?){10}"))
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Email domain must match the account's website">
+AND(
+  NOT(ISBLANK(Email)),
+  NOT(ISBLANK(Account.Website)),
+  NOT(CONTAINS(LOWER(Account.Website), LOWER(MID(Email, FIND("@", Email) + 1, 255))))
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Only users with a custom permission can change the discount after approval">
+AND(
+  ISCHANGED(Discount__c),
+  ISPICKVAL(Approval_Status__c, "Approved"),
+  NOT($Permission.Edit_Approved_Discounts)
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="Lock closed cases except for supervisors">
+AND(
+  NOT(ISNEW()),
+  ISPICKVAL(PRIORVALUE(Status), "Closed"),
+  NOT(ISCHANGED(Status)),          /* still allow reopening */
+  NOT($Permission.Edit_Closed_Cases)
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="City must match the postal code in a reference object (VLOOKUP)">
+AND(
+  BillingCountry = "US",
+  /* Zip_Code__c records: Name = the 5-digit code, City__c = the city */
+  VLOOKUP($ObjectType.Zip_Code__c.Fields.City__c,
+          $ObjectType.Zip_Code__c.Fields.Name,
+          LEFT(BillingPostalCode, 5)) <> BillingCity
+)
+</script>
+<script type="text/plain" data-lang="formula" data-title="End date after start date">
+AND(NOT(ISBLANK(End_Date__c)), End_Date__c < Start_Date__c)
+</script>
+
+<h3>Validation rule best practices</h3>
+<ul>
+<li><b>Write the error for the user</b>: say what to do, not what's wrong. "Enter a loss reason before closing the opportunity as lost."</li>
+<li><b>Put the error on the field</b> the user needs to fix when there is one.</li>
+<li><b>Add a bypass</b>: <code>NOT($Permission.Bypass_Validation)</code> with a custom permission assigned to integration and data-migration users via a permission set. Much cleaner than checking profile names.</li>
+<li><b>Mind data loads</b>: activating a new rule doesn't check existing records, but the next edit of any old record will fail if it's invalid.</li>
+<li><b>Test with Apex</b>: validation rules fire in tests, so test data must satisfy them. Keep a test data factory up to date.</li>
+</ul>
+
+<h2>Default values and other formula uses</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Where</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td>Field default value</td><td><code>TODAY() + 30</code> on a Due Date field; <code>$User.Region__c</code> on a Region field</td></tr>
+<tr><td>Flow formula resource</td><td><code>{!$Record.Amount} * 0.1</code> (Flow uses <code>{!...}</code> merge syntax)</td></tr>
+<tr><td>Report row-level formula</td><td><code>IF(AMOUNT &gt; 100000, "Big", "Normal")</code></td></tr>
+<tr><td>Report summary formula</td><td><code>WON:SUM / AMOUNT:SUM</code> (win rate by group)</td></tr>
+<tr><td>Approval process entry criteria</td><td><code>Discount__c &gt; 0.2</code></td></tr>
+<tr><td>Button/link URL</td><td><code>/lightning/o/Case/new?defaultFieldValues=AccountId={!Account.Id}</code></td></tr>
+</tbody></table></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Governor limits &amp; performance — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce governor limits with what usually breaks them, bulkification patterns with before/after code, checking limits at runtime, selective queries and indexes, large data volumes, data and ownership skew, and CPU optimisation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="limits">
+<main class="content">
+<h1>Governor limits & performance</h1>
+<p class="lede">Every transaction gets a fixed budget. Exceed any of it and Salesforce throws <code>System.LimitException</code>, which can't be caught, and rolls back the entire transaction.</p>
+
+<h2>Per-transaction Apex limits</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Limit</th><th>Synchronous</th><th>Asynchronous</th><th>What usually breaks it</th></tr></thead>
+<tbody>
+<tr><td>SOQL queries</td><td>100</td><td>200</td><td>Queries inside loops; many flows/triggers on one object</td></tr>
+<tr><td>Rows returned by SOQL</td><td>50,000</td><td>50,000</td><td>Unfiltered queries; aggregates over big tables</td></tr>
+<tr><td>SOSL queries</td><td>20</td><td>20</td><td>Search inside loops</td></tr>
+<tr><td>DML statements</td><td>150</td><td>150</td><td>insert/update inside loops</td></tr>
+<tr><td>Rows processed by DML</td><td>10,000</td><td>10,000</td><td>Mass updates — use Batch Apex</td></tr>
+<tr><td>CPU time</td><td>10,000 ms</td><td>60,000 ms</td><td>Nested loops, string building, heavy automation stacks</td></tr>
+<tr><td>Heap size</td><td>6 MB</td><td>12 MB</td><td>Large query results, big JSON, file bodies in memory</td></tr>
+<tr><td>Callouts</td><td>100</td><td>100</td><td>One callout per record</td></tr>
+<tr><td>Total callout timeout</td><td>120 s</td><td>120 s</td><td>Slow APIs</td></tr>
+<tr><td><code>@future</code> calls</td><td>50</td><td>0 in batch and future</td><td>A future call per record</td></tr>
+<tr><td>Queueable jobs enqueued</td><td>50</td><td>1</td><td>Enqueuing per record</td></tr>
+<tr><td><code>Messaging.sendEmail</code> calls</td><td>10</td><td>10</td><td>One send per record — build a list instead</td></tr>
+<tr><td>Published platform events (immediate)</td><td>150 <code>EventBus.publish</code> calls</td><td>150</td><td>Publishing per record</td></tr>
+<tr><td>Trigger/flow recursion depth</td><td>16</td><td>16</td><td>Triggers updating records that fire themselves</td></tr>
+<tr><td>Max transaction execution time</td><td>10 minutes</td><td>10 minutes</td><td>Long-running callouts and queries</td></tr>
+</tbody></table></div>
+<p>Flows count against the same limits: each Get Records is a SOQL query, each Create/Update/Delete is a DML statement. Managed packages have their own separate SOQL/DML/CPU counters per namespace (CPU and heap are shared).</p>
+
+<h2>Bulkification</h2>
+<p>A trigger, flow or invocable action receives up to 200 records at once. Code must use a constant number of queries and DML statements regardless of how many records arrive.</p>
+<h3>Pattern: collect → query once → map → loop → DML once</h3>
+<script type="text/plain" data-lang="apex" data-title="✗ Fails at 101 records">
+for (Contact c : Trigger.new) {
+    Account a = [SELECT Id, Tier__c FROM Account WHERE Id = :c.AccountId];   // query per record
+    c.Tier__c = a.Tier__c;
+}
+</script>
+<script type="text/plain" data-lang="apex" data-title="✓ One query for any number of records">
+Set<Id> accountIds = new Set<Id>();
+for (Contact c : Trigger.new) accountIds.add(c.AccountId);
+
+Map<Id, Account> accounts = new Map<Id, Account>(
+    [SELECT Id, Tier__c FROM Account WHERE Id IN :accountIds]);
+
+for (Contact c : Trigger.new) {
+    Account a = accounts.get(c.AccountId);
+    if (a != null) c.Tier__c = a.Tier__c;
+}
+</script>
+<script type="text/plain" data-lang="apex" data-title="✗ DML per record">
+for (Opportunity o : wonOpps) {
+    insert new Task(WhatId = o.Id, Subject = 'Kick-off');     // 150 won deals = limit
+}
+</script>
+<script type="text/plain" data-lang="apex" data-title="✓ Collect, then one DML">
+List<Task> tasks = new List<Task>();
+for (Opportunity o : wonOpps) tasks.add(new Task(WhatId = o.Id, Subject = 'Kick-off'));
+insert tasks;
+</script>
+<h3>Pattern: avoid nested loops with maps</h3>
+<script type="text/plain" data-lang="apex" data-title="✗ O(n × m) — CPU time explodes">
+for (Opportunity o : opps) {
+    for (Account a : accounts) {
+        if (a.Id == o.AccountId) o.Region__c = a.Region__c;
+    }
+}
+</script>
+<script type="text/plain" data-lang="apex" data-title="✓ O(n) with a map lookup">
+Map<Id, Account> accById = new Map<Id, Account>(accounts);
+for (Opportunity o : opps) {
+    o.Region__c = accById.get(o.AccountId)?.Region__c;
+}
+</script>
+<h3>Pattern: query parent and children together</h3>
+<script type="text/plain" data-lang="apex">
+// One query instead of one per account
+for (Account a : [SELECT Id, (SELECT Id, Email FROM Contacts) FROM Account WHERE Id IN :ids]) {
+    for (Contact c : a.Contacts) { /* ... */ }
+}
+</script>
+
+<h2>Checking limits at runtime</h2>
+<script type="text/plain" data-lang="apex">
+System.debug('SOQL ' + Limits.getQueries() + '/' + Limits.getLimitQueries());
+System.debug('DML ' + Limits.getDmlStatements() + '/' + Limits.getLimitDmlStatements());
+System.debug('CPU ' + Limits.getCpuTime() + '/' + Limits.getLimitCpuTime() + ' ms');
+System.debug('Heap ' + Limits.getHeapSize() + '/' + Limits.getLimitHeapSize());
+
+// Defensive: hand work off before hitting the wall
+if (Limits.getQueries() > Limits.getLimitQueries() - 10) {
+    System.enqueueJob(new ContinueWorkJob(remainingIds));
+    return;
+}
+</script>
+<p>Every debug log ends with a <code>LIMIT_USAGE_FOR_NS</code> block showing usage for the transaction. The Apex Log Analyzer extension for VS Code turns logs into flame charts showing where CPU time went.</p>
+
+<h2>Org-wide limits</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Limit</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>API requests per 24 hours</td><td>Based on edition and licences. Check Setup → Company Information or <code>GET /services/data/vXX.X/limits</code>.</td></tr>
+<tr><td>Async Apex executions per 24 hours</td><td>Greater of 250,000 or 200 × user licences</td></tr>
+<tr><td>Scheduled Apex jobs</td><td>100 at once</td></tr>
+<tr><td>Batch jobs</td><td>5 processing concurrently, 100 in the flex queue</td></tr>
+<tr><td>Single emails per day to external addresses</td><td>Edition-based (Setup → Company Information)</td></tr>
+<tr><td>Platform event publishing and delivery</td><td>Hourly/daily allocations by edition and add-ons</td></tr>
+<tr><td>Data and file storage</td><td>Edition + per-licence allocation</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex" data-title="Read org limits in Apex">
+Map<String, System.OrgLimit> lims = OrgLimits.getMap();
+System.OrgLimit api = lims.get('DailyApiRequests');
+System.debug(api.getValue() + ' of ' + api.getLimit() + ' API calls used');
+</script>
+
+<h2>Selective queries and indexes</h2>
+<p>On large objects (hundreds of thousands of rows or more), the query optimiser only uses an index when the filter is <b>selective</b>. Non-selective queries in triggers on big objects fail with <code>Non-selective query against large object type</code>.</p>
+<h3>Indexed fields</h3>
+<ul>
+<li>Standard: <code>Id</code>, <code>Name</code>, <code>OwnerId</code>, <code>CreatedDate</code>, <code>SystemModstamp</code>, <code>RecordTypeId</code>, lookup and master-detail fields, <code>Email</code> on contacts and leads.</li>
+<li>Custom fields marked <b>External ID</b> or <b>Unique</b>.</li>
+<li>Custom indexes Salesforce Support adds on request (including some deterministic formula fields).</li>
+</ul>
+<h3>Selectivity thresholds</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Index</th><th>Selective if the filter returns fewer than…</th></tr></thead>
+<tbody>
+<tr><td>Standard index</td><td>30% of the first million records + 15% of the rest, up to 1,000,000 rows</td></tr>
+<tr><td>Custom index</td><td>10% of the first million + 5% of the rest, up to 333,333 rows</td></tr>
+</tbody></table></div>
+<h3>What defeats an index</h3>
+<ul>
+<li><code>!=</code>, <code>NOT IN</code>, <code>NOT LIKE</code>, <code>EXCLUDES</code></li>
+<li>Leading wildcards: <code>LIKE '%smith'</code></li>
+<li>Comparing to <code>null</code> on most fields (<code>Field__c = null</code>)</li>
+<li>Non-deterministic formula fields</li>
+<li>OR conditions where any branch is non-selective</li>
+</ul>
+<p>Use the <b>Query Plan</b> tool (Developer Console → Help → Preferences → Enable Query Plan) to see the cost and which index would be used. A cost under 1 means selective.</p>
+
+<h2>Large data volumes</h2>
+<ul>
+<li><b>Archive</b> old records (to Big Objects, an external store, or Salesforce Archive) so working tables stay small.</li>
+<li><b>Skinny tables</b> (via Support) hold frequently used fields from an object in one table, avoiding joins.</li>
+<li><b>Bulk API 2.0</b> for loads and extracts; <b>PK chunking</b> for very large extracts.</li>
+<li><b>Defer sharing calculations</b> (via Support) during big ownership or role changes.</li>
+<li><b>Load in parent-first order</b> and sort child CSVs by parent ID to reduce lock contention.</li>
+</ul>
+
+<h2>Data skew</h2>
+<div class="defs">
+<div><b>Account (parent) skew</b><p>More than about 10,000 child records under one parent (e.g. a catch-all "Unknown Customer" account). Updating children locks the parent, causing <code>UNABLE_TO_LOCK_ROW</code> errors and slow sharing recalculation. Spread children across several parents.</p></div>
+<div><b>Ownership skew</b><p>One user owning more than about 10,000 records of an object (often an integration user). Role or group changes trigger huge sharing recalculations. Put such users in a role at the top of the hierarchy or with no role, and spread ownership.</p></div>
+<div><b>Lookup skew</b><p>Many records pointing to one lookup target (e.g. every case referencing one "Default" product). Similar locking problems on insert.</p></div>
+</div>
+
+<h2>CPU time tips</h2>
+<ul>
+<li>Exit early: check if anything relevant changed before doing work.</li>
+<li>Use maps and sets, not nested loops or <code>List.contains</code> in loops.</li>
+<li>Reduce describe calls; cache them in statics.</li>
+<li>Let the database filter: add WHERE clauses rather than filtering in Apex.</li>
+<li>Consolidate automation: ten record-triggered flows on one object each add overhead.</li>
+<li>Move non-urgent work async (queueable, async flow path, platform events).</li>
+<li>Time spent waiting on the database and callouts doesn't count toward CPU time — Apex code, formulas and flow processing do.</li>
+</ul>
+</main>
+</body>
+</html>

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Errors &amp; gotchas — Salesforce Field Guide</title>
+<meta name="description" content="Common Salesforce error messages and what they mean, with fixes: governor limit exceptions, query and null errors, mixed DML, uncommitted work, row locks, validation failures, deployment and coverage errors, and platform gotchas.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="errors">
+<main class="content">
+<h1>Errors & gotchas</h1>
+<p class="lede">The errors you'll see most, what's actually happening, and the fix.</p>
+
+<h2>Apex runtime errors</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>System.LimitException: Too many SOQL queries: 101</code></td><td>A query in a loop, or several flows/triggers adding up, or recursion</td><td>Bulkify (<a href="limits.html">patterns</a>); check the debug log's query count by line; add recursion control</td></tr>
+<tr><td><code>Too many DML statements: 151</code></td><td>DML in a loop</td><td>Collect records in a list, one DML after the loop</td></tr>
+<tr><td><code>Apex CPU time limit exceeded</code></td><td>Too much processing: nested loops, heavy automation on one object</td><td>Use maps, exit early, consolidate flows, move work async; profile with Apex Log Analyzer</td></tr>
+<tr><td><code>Too many query rows: 50001</code></td><td>Query returns more than 50,000 rows in one transaction</td><td>Filter more; use Batch Apex or aggregate queries</td></tr>
+<tr><td><code>Apex heap size too large</code></td><td>Holding too much in memory</td><td>SOQL for-loops, query fewer fields, process in batches</td></tr>
+<tr><td><code>System.QueryException: List has no rows for assignment to SObject</code></td><td>Single-record assignment from a query that returned nothing</td><td>Query into a list and check <code>isEmpty()</code></td></tr>
+<tr><td><code>List has more than 1 row for assignment to SObject</code></td><td>Single-record assignment from a query with several results</td><td>Add <code>LIMIT 1</code> or query into a list</td></tr>
+<tr><td><code>System.NullPointerException: Attempt to de-reference a null object</code></td><td>Calling a method or field on null — often a missing map key or unqueried parent</td><td><code>?.</code>, <code>??</code>, <code>containsKey()</code>, null checks</td></tr>
+<tr><td><code>SObject row was retrieved via SOQL without querying the requested field: Account.Industry</code></td><td>Reading a field you didn't SELECT</td><td>Add it to the query</td></tr>
+<tr><td><code>System.ListException: List index out of bounds: 0</code></td><td><code>list[0]</code> on an empty list</td><td>Check size first</td></tr>
+<tr><td><code>System.TypeException: Invalid conversion from runtime type</code></td><td>Wrong cast (e.g. Integer from a Decimal aggregate)</td><td>Cast to the actual type; aggregates return Decimal/Integer depending on function</td></tr>
+<tr><td><code>Maximum trigger depth exceeded</code></td><td>Recursion: a trigger keeps re-firing itself</td><td>Change detection and a processed-ID set (<a href="triggers.html">recursion control</a>)</td></tr>
+<tr><td><code>System.SObjectException: Field is not writeable</code></td><td>Setting a formula, roll-up, system or auto-number field</td><td>Don't set it; or set a different, editable field</td></tr>
+<tr><td><code>Non-selective query against large object type</code></td><td>Trigger query on a big object without an indexed, selective filter</td><td>Filter on indexed fields; request a custom index (<a href="limits.html">selectivity</a>)</td></tr>
+</tbody></table></div>
+
+<h2>DML and data errors</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>FIELD_CUSTOM_VALIDATION_EXCEPTION</code></td><td>A validation rule returned true</td><td>The message after the code names the rule; fix the data or add a bypass for integrations</td></tr>
+<tr><td><code>REQUIRED_FIELD_MISSING</code></td><td>A field required at field level isn't set</td><td>Set it; check the <code>fields</code> list in the error</td></tr>
+<tr><td><code>INVALID_CROSS_REFERENCE_KEY</code></td><td>An ID points to a record that doesn't exist, is the wrong type, or you can't see</td><td>Check the ID and its object; check sharing; don't use sandbox IDs in production</td></tr>
+<tr><td><code>INSUFFICIENT_ACCESS_OR_READONLY</code> / <code>INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY</code></td><td>The user can't edit this record, or can't see a related record you're linking to</td><td>Check sharing on both records; run in system mode only if that's intended</td></tr>
+<tr><td><code>DUPLICATE_VALUE</code></td><td>A unique or external ID field already has this value</td><td>Upsert instead of insert; dedupe the input</td></tr>
+<tr><td><code>DUPLICATES_DETECTED</code></td><td>A blocking duplicate rule matched</td><td>Merge, or use <code>DuplicateRuleHeader.allowSave</code> where appropriate</td></tr>
+<tr><td><code>UNABLE_TO_LOCK_ROW</code></td><td>Another transaction holds a lock on the record or its parent (common with data skew and parallel loads)</td><td>Smaller batches, serial mode, sort child rows by parent, retry; fix skew</td></tr>
+<tr><td><code>MIXED_DML_OPERATION</code></td><td>Setup objects (User, Group, PermissionSetAssignment) and normal objects in one transaction</td><td>Move one part to <code>@future</code>/Queueable; in tests, wrap in <code>System.runAs</code></td></tr>
+<tr><td><code>ENTITY_IS_DELETED</code></td><td>Updating a record that's in the Recycle Bin</td><td>Undelete first, or skip it</td></tr>
+<tr><td><code>STRING_TOO_LONG</code></td><td>Value exceeds field length</td><td>Truncate (<code>abbreviate</code>) or lengthen the field</td></tr>
+<tr><td><code>INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST</code></td><td>Picklist value not in a restricted list</td><td>Use the API value; add the value; check record type's allowed values</td></tr>
+<tr><td><code>CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY</code></td><td>A trigger or flow on the record threw an error</td><td>Read the rest of the message — it contains the real error and the trigger/flow name</td></tr>
+</tbody></table></div>
+
+<h2>Callout and integration errors</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>You have uncommitted work pending. Please commit or rollback before calling out</code></td><td>DML happened earlier in the transaction</td><td>Call out first, or move the callout to async</td></tr>
+<tr><td><code>Callout from triggers are currently not supported</code></td><td>Synchronous callout in trigger context</td><td>Queueable / <code>@future(callout=true)</code></td></tr>
+<tr><td><code>Unauthorized endpoint, please check Setup-&gt;Security-&gt;Remote site settings</code></td><td>Calling a URL directly without a Remote Site Setting</td><td>Use a Named Credential (no remote site needed)</td></tr>
+<tr><td><code>Read timed out</code></td><td>Remote system too slow</td><td>Raise <code>setTimeout</code> (max 120 s); go async; ask for a faster endpoint</td></tr>
+<tr><td><code>INVALID_SESSION_ID</code> (401)</td><td>Expired or revoked token</td><td>Re-authenticate / refresh the token</td></tr>
+<tr><td><code>REQUEST_LIMIT_EXCEEDED</code></td><td>Org's 24-hour API allowance used up</td><td>Find the chatty integration (Setup → API usage); use Bulk/Composite; buy more</td></tr>
+<tr><td><code>API_DISABLED_FOR_ORG</code> / <code>API_CURRENTLY_DISABLED</code></td><td>Edition without API, or the user lacks "API Enabled"</td><td>Grant API Enabled via permission set</td></tr>
+</tbody></table></div>
+
+<h2>Deployment errors</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>Average test coverage across all Apex Classes and Triggers is 72%, at least 75% test coverage is required</code></td><td>Not enough coverage org-wide</td><td>Add tests; check you're running the right test level</td></tr>
+<tr><td><code>Test coverage of selected Apex Trigger is 0%</code></td><td>A trigger in the deploy has no test</td><td>Add a test that performs DML on that object</td></tr>
+<tr><td>Tests pass in sandbox, fail in production</td><td>Tests depend on org data (<code>SeeAllData</code>), hardcoded IDs, or production-only validation rules/flows</td><td>Create all data in tests; use a test data factory</td></tr>
+<tr><td><code>No such column 'X__c' on entity</code> / <code>Variable does not exist</code></td><td>Code references a field not in the deployment or target org</td><td>Include the field in the deploy, or deploy it first</td></tr>
+<tr><td><code>This component is in use by …</code></td><td>Deleting something still referenced</td><td>Remove references first, then use post-destructive changes</td></tr>
+<tr><td><code>Cannot modify managed object</code></td><td>Trying to deploy changes to a managed package component</td><td>Exclude it (.forceignore); only subscriber-editable attributes can change</td></tr>
+<tr><td><code>This schedulable class has jobs pending or in progress</code></td><td>Deploying a class referenced by a scheduled job</td><td>Abort the job, deploy, reschedule — or enable deployments with pending jobs</td></tr>
+</tbody></table></div>
+
+<h2>Flow errors</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>An unhandled fault has occurred in this flow</code></td><td>An element failed with no fault path</td><td>Read the flow error email for the element and message; add a fault path</td></tr>
+<tr><td><code>Too many SOQL queries: 101</code> (or DML) from a flow</td><td>Get/Update elements inside a loop</td><td>Move DML/queries outside the loop; use collection updates</td></tr>
+<tr><td><code>The flow tried to update these records: null</code></td><td>Update Records with an empty or null record variable</td><td>Decision: check the variable is not null before updating</td></tr>
+<tr><td>Flow runs but nothing happens</td><td>Entry conditions not met; flow version inactive; wrong trigger type; running user lacks access</td><td>Debug the flow with the record; check active version and entry conditions</td></tr>
+</tbody></table></div>
+
+<h2>Gotchas</h2>
+<div class="defs">
+<div><b>"It works for me"</b><p>You're a System Administrator with View All Data. Test as the user (Login As) and walk the <a href="security.html">security layers</a>.</p></div>
+<div><b>15- vs 18-character IDs</b><p>Spreadsheets compare case-insensitively, so 15-char IDs collide. Use <code>CASESAFEID(Id)</code> in a formula or the 18-char ID from the API.</p></div>
+<div><b>Hardcoded IDs and URLs</b><p>Differ between orgs. Use DeveloperName lookups, custom metadata, Named Credentials, <code>Url.getOrgDomainUrl()</code>.</p></div>
+<div><b>Time zones</b><p>Datetimes are stored in UTC. <code>Date</code> values derived from Datetime use the running user's zone; scheduled jobs use the org's default time zone.</p></div>
+<div><b>Checkboxes are never null</b><p>But Booleans in Apex can be. <code>if (myBool)</code> with null throws.</p></div>
+<div><b>Formula fields aren't recalculated in Apex memory</b><p>After changing a field in Apex, formula values on the in-memory record are stale until re-queried (or call <code>Formula.recalculateFormulas(records)</code>).</p></div>
+<div><b>Sandbox emails</b><p>New sandboxes send "System email only". Flows "work" but no email arrives until deliverability is changed.</p></div>
+<div><b>Trigger order</b><p>Multiple triggers on one object run in no guaranteed order. Keep one trigger per object.</p></div>
+<div><b>Deleting a field deletes its data</b><p>After 15 days in the Recycle Bin it's gone for good; export first.</p></div>
+<div><b>Picklist API value vs label</b><p>Code and the API use API values; translations and renames change labels. Compare against API values.</p></div>
+<div><b>Release surprises</b><p>Read release notes and test release updates in a preview sandbox each release.</p></div>
+</div>
+</main>
+</body>
+</html>

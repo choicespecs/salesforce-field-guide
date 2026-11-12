@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lightning Web Components — Salesforce Field Guide</title>
+<meta name="description" content="Lightning Web Components in depth: component files, template directives, lifecycle hooks, reactivity, decorators, events, Lightning Data Service, wire vs imperative Apex, refreshApex, navigation, toasts, modals, Lightning Message Service, screen-flow and quick-action components, styling and Jest tests.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="lwc">
+<main class="content">
+<h1>Lightning Web Components</h1>
+<p class="lede">LWC is Salesforce's UI framework, built on web standards: custom elements, shadow DOM, ES modules and templates. If you know modern JavaScript, most of LWC is familiar; the Salesforce parts are data access and where components can be placed.</p>
+
+<h2>A component is a folder</h2>
+<script type="text/plain" data-lang="text">
+force-app/main/default/lwc/
+└── accountContacts/
+    ├── accountContacts.html          # template (required for UI components)
+    ├── accountContacts.js            # class (required)
+    ├── accountContacts.css           # scoped styles (optional)
+    ├── accountContacts.js-meta.xml   # where it can be used (required)
+    └── __tests__/
+        └── accountContacts.test.js   # Jest tests
+</script>
+<p>Folder and file names are camelCase; in markup they become kebab-case with the <code>c-</code> namespace: <code>&lt;c-account-contacts&gt;</code>. Create one with <code>sf lightning generate component --name accountContacts --type lwc --output-dir force-app/main/default/lwc</code>.</p>
+
+<h2>A complete example</h2>
+<script type="text/plain" data-lang="js" data-title="accountContacts.js">
+import { LightningElement, api, wire } from 'lwc';
+import { refreshApex } from '@salesforce/apex';
+import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+import { NavigationMixin } from 'lightning/navigation';
+import getContacts from '@salesforce/apex/ContactController.getContacts';
+import setPrimary from '@salesforce/apex/ContactController.setPrimary';
+
+const COLUMNS = [
+    { label: 'Name', fieldName: 'Name' },
+    { label: 'Email', fieldName: 'Email', type: 'email' },
+    { label: 'Title', fieldName: 'Title' },
+    { type: 'action', typeAttributes: { rowActions: [
+        { label: 'View', name: 'view' },
+        { label: 'Make primary', name: 'primary' }
+    ] } }
+];
+
+export default class AccountContacts extends NavigationMixin(LightningElement) {
+    @api recordId;              // set automatically on a record page
+    @api maxRows = 25;          // configurable in App Builder (see meta file)
+    columns = COLUMNS;
+    searchTerm = '';
+    wiredResult;                // keep the wire result for refreshApex
+    contacts = [];
+    error;
+
+    // Re-runs whenever recordId, searchTerm or maxRows changes ('$' = reactive)
+    @wire(getContacts, { accountId: '$recordId', searchTerm: '$searchTerm', maxRows: '$maxRows' })
+    wiredContacts(result) {
+        this.wiredResult = result;
+        if (result.data) { this.contacts = result.data; this.error = undefined; }
+        else if (result.error) { this.error = result.error; this.contacts = []; }
+    }
+
+    get hasContacts() { return this.contacts.length > 0; }
+    get errorMessage() { return this.error?.body?.message ?? 'Unknown error'; }
+
+    handleSearch(event) {
+        clearTimeout(this.timer);
+        const value = event.target.value;
+        this.timer = setTimeout(() => { this.searchTerm = value; }, 300);  // debounce
+    }
+
+    async handleRowAction(event) {
+        const { action, row } = event.detail;
+        if (action.name === 'view') {
+            this[NavigationMixin.Navigate]({
+                type: 'standard__recordPage',
+                attributes: { recordId: row.Id, objectApiName: 'Contact', actionName: 'view' }
+            });
+        } else if (action.name === 'primary') {
+            try {
+                await setPrimary({ contactId: row.Id, accountId: this.recordId });  // imperative call
+                this.dispatchEvent(new ShowToastEvent({ title: 'Saved', message: row.Name + ' is now primary', variant: 'success' }));
+                await refreshApex(this.wiredResult);
+            } catch (e) {
+                this.dispatchEvent(new ShowToastEvent({ title: 'Error', message: e.body?.message, variant: 'error' }));
+            }
+        }
+    }
+}
+</script>
+<script type="text/plain" data-lang="html" data-title="accountContacts.html">
+<template>
+    <lightning-card title="Contacts" icon-name="standard:contact">
+        <div class="slds-p-horizontal_medium">
+            <lightning-input type="search" label="Search" onchange={handleSearch}></lightning-input>
+        </div>
+
+        <template lwc:if={hasContacts}>
+            <lightning-datatable
+                key-field="Id"
+                data={contacts}
+                columns={columns}
+                hide-checkbox-column
+                onrowaction={handleRowAction}>
+            </lightning-datatable>
+        </template>
+        <template lwc:elseif={error}>
+            <p class="slds-p-around_medium slds-text-color_error">{errorMessage}</p>
+        </template>
+        <template lwc:else>
+            <p class="slds-p-around_medium">No contacts found.</p>
+        </template>
+    </lightning-card>
+</template>
+</script>
+<script type="text/plain" data-lang="apex" data-title="ContactController.cls">
+public with sharing class ContactController {
+
+    @AuraEnabled(cacheable=true)                // required for @wire; no DML allowed
+    public static List<Contact> getContacts(Id accountId, String searchTerm, Integer maxRows) {
+        String term = '%' + (searchTerm ?? '') + '%';
+        return [SELECT Id, Name, Email, Title FROM Contact
+                WHERE AccountId = :accountId AND Name LIKE :term
+                WITH USER_MODE ORDER BY Name LIMIT :maxRows];
+    }
+
+    @AuraEnabled                                 // not cacheable: performs DML
+    public static void setPrimary(Id contactId, Id accountId) {
+        try {
+            update as user new Account(Id = accountId, Primary_Contact__c = contactId);
+        } catch (Exception e) {
+            throw new AuraHandledException(e.getMessage());   // message reaches the component
+        }
+    }
+}
+</script>
+<script type="text/plain" data-lang="xml" data-title="accountContacts.js-meta.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>64.0</apiVersion>
+    <isExposed>true</isExposed>
+    <masterLabel>Account Contacts</masterLabel>
+    <targets>
+        <target>lightning__RecordPage</target>
+        <target>lightning__AppPage</target>
+        <target>lightning__HomePage</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__RecordPage">
+            <objects><object>Account</object></objects>
+            <property name="maxRows" type="Integer" default="25" label="Maximum rows"/>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>
+</script>
+
+<h2>Templates</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Syntax</th><th>Does</th></tr></thead>
+<tbody>
+<tr><td><code>{property}</code></td><td>Binds a property or getter. No expressions — compute in a getter instead.</td></tr>
+<tr><td><code>lwc:if={x}</code> / <code>lwc:elseif={y}</code> / <code>lwc:else</code></td><td>Conditional rendering (replaces the older <code>if:true</code>/<code>if:false</code>).</td></tr>
+<tr><td><code>for:each={items} for:item="item"</code></td><td>Loop; each child needs <code>key={item.Id}</code>.</td></tr>
+<tr><td><code>iterator:it={items}</code></td><td>Loop with <code>it.first</code>, <code>it.last</code>, <code>it.index</code>, <code>it.value</code>.</td></tr>
+<tr><td><code>onclick={handleClick}</code></td><td>Event handler (lowercase event name prefixed with <code>on</code>).</td></tr>
+<tr><td><code>lwc:ref="name"</code></td><td>Reference an element as <code>this.refs.name</code>.</td></tr>
+<tr><td><code>lwc:spread={props}</code></td><td>Pass an object of properties to a child.</td></tr>
+<tr><td><code>&lt;slot&gt;</code>, <code>&lt;slot name="footer"&gt;</code></td><td>Content projection from the parent.</td></tr>
+<tr><td><code>lwc:dom="manual"</code></td><td>Allow third-party code to manipulate a container's DOM.</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="html" data-title="Loops and conditionals">
+<template>
+    <ul>
+        <template for:each={opportunities} for:item="opp">
+            <li key={opp.Id} class={opp.cssClass}>
+                {opp.Name} — <lightning-formatted-number value={opp.Amount} format-style="currency"></lightning-formatted-number>
+            </li>
+        </template>
+    </ul>
+    <template iterator:it={steps}>
+        <span key={it.value.id}>{it.value.label}<template lwc:if={it.last}> (final)</template></span>
+    </template>
+</template>
+</script>
+
+<h2>Reactivity and decorators</h2>
+<ul>
+<li>All class fields are reactive: assigning a new value re-renders. For objects and arrays, <b>assign a new reference</b> (<code>this.items = [...this.items, x]</code>) — mutating in place isn't tracked unless the field uses <code>@track</code>.</li>
+<li><code>@api</code>: public property or method, set by the parent or the page. Treat <code>@api</code> values as read-only inside the component.</li>
+<li><code>@wire</code>: reactive data from an adapter or <code>cacheable=true</code> Apex. Assign to a property (<code>{ data, error }</code>) or a function.</li>
+<li>Getters recalculate on each render — use them for derived values.</li>
+</ul>
+
+<h2>Lifecycle hooks</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Hook</th><th>When</th><th>Use for</th></tr></thead>
+<tbody>
+<tr><td><code>constructor()</code></td><td>Created (call <code>super()</code> first)</td><td>Rarely needed; can't access attributes or children</td></tr>
+<tr><td><code>connectedCallback()</code></td><td>Inserted into the DOM</td><td>Load data imperatively, subscribe to message channels, add listeners</td></tr>
+<tr><td><code>renderedCallback()</code></td><td>After every render</td><td>Third-party libraries, DOM measurements (guard against running repeatedly)</td></tr>
+<tr><td><code>disconnectedCallback()</code></td><td>Removed from the DOM</td><td>Unsubscribe, clear timers</td></tr>
+<tr><td><code>errorCallback(error, stack)</code></td><td>A descendant threw</td><td>Error boundaries</td></tr>
+</tbody></table></div>
+
+<h2>Communicating between components</h2>
+<h3>Parent → child: @api</h3>
+<script type="text/plain" data-lang="html">
+<!-- parent.html -->
+<c-order-line line={line} currency-code="EUR" onremove={handleRemove}></c-order-line>
+</script>
+<h3>Child → parent: custom events</h3>
+<script type="text/plain" data-lang="js" data-title="orderLine.js">
+import { LightningElement, api } from 'lwc';
+export default class OrderLine extends LightningElement {
+    @api line;
+    @api currencyCode;
+    handleClick() {
+        this.dispatchEvent(new CustomEvent('remove', {
+            detail: { lineId: this.line.Id }      // event names: lowercase, no 'on' prefix
+            // bubbles: true, composed: true      // only if it must cross shadow boundaries
+        }));
+    }
+}
+</script>
+<h3>Unrelated components: Lightning Message Service</h3>
+<script type="text/plain" data-lang="xml" data-title="messageChannels/Record_Selected.messageChannel-meta.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningMessageChannel xmlns="http://soap.sforce.com/2006/04/metadata">
+    <masterLabel>Record Selected</masterLabel>
+    <isExposed>true</isExposed>
+    <lightningMessageFields><fieldName>recordId</fieldName></lightningMessageFields>
+</LightningMessageChannel>
+</script>
+<script type="text/plain" data-lang="js" data-title="Publish and subscribe">
+import { LightningElement, wire } from 'lwc';
+import { publish, subscribe, unsubscribe, MessageContext } from 'lightning/messageService';
+import RECORD_SELECTED from '@salesforce/messageChannel/Record_Selected__c';
+
+export default class Publisher extends LightningElement {
+    @wire(MessageContext) messageContext;
+    select(id) { publish(this.messageContext, RECORD_SELECTED, { recordId: id }); }
+}
+
+export class Subscriber extends LightningElement {   // (separate component in practice)
+    @wire(MessageContext) messageContext;
+    subscription;
+    connectedCallback() {
+        this.subscription = subscribe(this.messageContext, RECORD_SELECTED, (msg) => this.load(msg.recordId));
+    }
+    disconnectedCallback() { unsubscribe(this.subscription); }
+}
+</script>
+
+<h2>Lightning Data Service (no Apex)</h2>
+<p>LDS reads and writes records through a shared client cache, respects security, and keeps every component showing the same record in sync. Prefer it to Apex for single-record work.</p>
+<script type="text/plain" data-lang="js" data-title="Read and update a record with uiRecordApi">
+import { LightningElement, api, wire } from 'lwc';
+import { getRecord, getFieldValue, updateRecord } from 'lightning/uiRecordApi';
+import NAME from '@salesforce/schema/Account.Name';
+import RATING from '@salesforce/schema/Account.Rating';
+import OWNER_NAME from '@salesforce/schema/Account.Owner.Name';
+
+export default class AccountRating extends LightningElement {
+    @api recordId;
+
+    @wire(getRecord, { recordId: '$recordId', fields: [NAME, RATING, OWNER_NAME] })
+    account;
+
+    get name()  { return getFieldValue(this.account.data, NAME); }
+    get owner() { return getFieldValue(this.account.data, OWNER_NAME); }
+
+    async markHot() {
+        await updateRecord({ fields: { Id: this.recordId, [RATING.fieldApiName]: 'Hot' } });
+        // the wired record refreshes automatically
+    }
+}
+</script>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Need</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td>A whole form with no code</td><td><code>lightning-record-form</code> (layout or field list, view/edit modes)</td></tr>
+<tr><td>A custom form layout</td><td><code>lightning-record-edit-form</code> + <code>lightning-input-field</code>; <code>lightning-record-view-form</code> + <code>lightning-output-field</code></td></tr>
+<tr><td>Read fields</td><td><code>getRecord</code>, <code>getFieldValue</code></td></tr>
+<tr><td>Create / update / delete</td><td><code>createRecord</code>, <code>updateRecord</code>, <code>deleteRecord</code></td></tr>
+<tr><td>Object and picklist metadata</td><td><code>getObjectInfo</code>, <code>getPicklistValues</code> (<code>lightning/uiObjectInfoApi</code>)</td></tr>
+<tr><td>Related lists</td><td><code>getRelatedListRecords</code> (<code>lightning/uiRelatedListApi</code>)</td></tr>
+<tr><td>Queries across objects with filters</td><td>GraphQL wire adapter, or Apex</td></tr>
+<tr><td>Tell LDS a record changed outside it (e.g. Apex DML)</td><td><code>notifyRecordUpdateAvailable([{ recordId }])</code></td></tr>
+</tbody></table></div>
+
+<h2>Calling Apex: wire vs imperative</h2>
+<div class="tablewrap"><table>
+<thead><tr><th></th><th><code>@wire</code></th><th>Imperative</th></tr></thead>
+<tbody>
+<tr><td>Apex annotation</td><td><code>@AuraEnabled(cacheable=true)</code></td><td><code>@AuraEnabled</code> (cacheable optional)</td></tr>
+<tr><td>When it runs</td><td>Automatically, and again when reactive params change</td><td>When your code calls it (returns a Promise)</td></tr>
+<tr><td>DML allowed</td><td>No</td><td>Yes (if not cacheable)</td></tr>
+<tr><td>Refresh</td><td><code>refreshApex(wiredResult)</code></td><td>Call it again</td></tr>
+<tr><td>Use for</td><td>Reading data for display</td><td>Saving, button clicks, conditional loads</td></tr>
+</tbody></table></div>
+<p>Apex parameters are passed as an object with matching names; return types can be sObjects, lists, maps, primitives or classes with <code>@AuraEnabled</code> properties.</p>
+
+<h2>Other platform modules</h2>
+<script type="text/plain" data-lang="js">
+import USER_ID from '@salesforce/user/Id';
+import IS_GUEST from '@salesforce/user/isGuest';
+import GREETING from '@salesforce/label/c.Greeting';                 // custom label
+import CAN_APPROVE from '@salesforce/customPermission/Approve_Discounts';
+import LOGO from '@salesforce/resourceUrl/companyLogo';              // static resource
+import { loadScript, loadStyle } from 'lightning/platformResourceLoader';
+import { CloseActionScreenEvent } from 'lightning/actions';          // close a quick action
+import { FlowNavigationNextEvent, FlowAttributeChangeEvent } from 'lightning/flowSupport';
+import { getObjectInfo } from 'lightning/uiObjectInfoApi';
+import { subscribe as empSubscribe } from 'lightning/empApi';         // platform events / CDC in the UI
+</script>
+
+<h2>Modals</h2>
+<script type="text/plain" data-lang="js" data-title="confirmModal.js — extends LightningModal">
+import { api } from 'lwc';
+import LightningModal from 'lightning/modal';
+
+export default class ConfirmModal extends LightningModal {
+    @api message;
+    handleOk()     { this.close('ok'); }
+    handleCancel() { this.close('cancel'); }
+}
+</script>
+<script type="text/plain" data-lang="html" data-title="confirmModal.html">
+<template>
+    <lightning-modal-header label="Please confirm"></lightning-modal-header>
+    <lightning-modal-body>{message}</lightning-modal-body>
+    <lightning-modal-footer>
+        <lightning-button label="Cancel" onclick={handleCancel}></lightning-button>
+        <lightning-button variant="brand" label="OK" onclick={handleOk} class="slds-m-left_x-small"></lightning-button>
+    </lightning-modal-footer>
+</template>
+</script>
+<script type="text/plain" data-lang="js" data-title="Opening it">
+import ConfirmModal from 'c/confirmModal';
+async handleDelete() {
+    const result = await ConfirmModal.open({ size: 'small', message: 'Delete this record?' });
+    if (result === 'ok') { /* delete */ }
+}
+</script>
+
+<h2>Where components can go</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Target</th><th>Place</th></tr></thead>
+<tbody>
+<tr><td><code>lightning__RecordPage</code>, <code>lightning__AppPage</code>, <code>lightning__HomePage</code></td><td>Lightning App Builder pages</td></tr>
+<tr><td><code>lightning__RecordAction</code></td><td>Quick actions (screen or headless with <code>actionType</code>)</td></tr>
+<tr><td><code>lightning__FlowScreen</code></td><td>Custom screen-flow components</td></tr>
+<tr><td><code>lightning__UtilityBar</code></td><td>The app utility bar</td></tr>
+<tr><td><code>lightning__Tab</code></td><td>A custom Lightning component tab</td></tr>
+<tr><td><code>lightningCommunity__Page</code>, <code>lightningCommunity__Default</code></td><td>Experience Builder sites</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="js" data-title="A screen-flow component with input/output">
+import { LightningElement, api } from 'lwc';
+import { FlowAttributeChangeEvent } from 'lightning/flowSupport';
+
+export default class StarRating extends LightningElement {
+    @api label;           // exposed as a flow input in the meta file
+    @api value = 0;       // exposed as input and output
+
+    handleClick(event) {
+        const v = Number(event.currentTarget.dataset.value);
+        this.dispatchEvent(new FlowAttributeChangeEvent('value', v));   // tell Flow
+    }
+    @api validate() {     // called by Flow on Next
+        return this.value > 0 ? { isValid: true } : { isValid: false, errorMessage: 'Pick a rating' };
+    }
+}
+</script>
+
+<h2>Styling</h2>
+<ul>
+<li>Component CSS is <b>scoped</b> by shadow DOM: it can't leak out, and outside CSS can't reach in.</li>
+<li>Use the <b>Salesforce Lightning Design System</b> (SLDS) utility classes (<code>slds-p-around_medium</code>, <code>slds-grid</code>, <code>slds-text-heading_small</code>) and base components (<code>lightning-*</code>) so your UI matches the platform.</li>
+<li>Style base components with <b>styling hooks</b> (CSS custom properties) such as <code>--slds-c-button-brand-color-background</code>, not by targeting their internals.</li>
+</ul>
+
+<h2>Testing with Jest</h2>
+<script type="text/plain" data-lang="js" data-title="__tests__/accountRating.test.js">
+import { createElement } from 'lwc';
+import AccountRating from 'c/accountRating';
+import { getRecord } from 'lightning/uiRecordApi';
+
+const mockRecord = { fields: { Name: { value: 'Acme' }, Rating: { value: 'Warm' }, Owner: { value: { fields: { Name: { value: 'Ada' } } } } } };
+
+describe('c-account-rating', () => {
+    afterEach(() => { while (document.body.firstChild) document.body.removeChild(document.body.firstChild); });
+
+    it('shows the account name from LDS', async () => {
+        const el = createElement('c-account-rating', { is: AccountRating });
+        el.recordId = '001000000000001AAA';
+        document.body.appendChild(el);
+
+        getRecord.emit(mockRecord);          // push mock data through the wire adapter
+        await Promise.resolve();             // let the DOM re-render
+
+        expect(el.shadowRoot.textContent).toContain('Acme');
+    });
+});
+</script>
+<script type="text/plain" data-lang="bash">
+npm install --save-dev @salesforce/sfdx-lwc-jest
+npx sfdx-lwc-jest              # run all tests
+npx sfdx-lwc-jest --watch
+</script>
+
+<h2>Debugging</h2>
+<ul>
+<li>Setup → Debug Mode: enable for your user to get unminified framework code and clearer errors (slower; turn it off afterwards).</li>
+<li>Browser DevTools: components appear as custom elements; use <code>console.log(JSON.stringify(proxy))</code> to see reactive proxies' values.</li>
+<li>Apex errors reach the component as <code>error.body.message</code>; throw <code>AuraHandledException</code> for user-friendly messages.</li>
+<li>Lightning Locker / Lightning Web Security isolate components by namespace; some global APIs are restricted.</li>
+</ul>
+
+<div class="callout"><b>Aura and Visualforce</b> are the older frameworks. You'll maintain them in existing orgs, and LWCs can be nested inside Aura components (not the reverse). Build new UI in LWC.</div>
+</main>
+</body>
+</html>

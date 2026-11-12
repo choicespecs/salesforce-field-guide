@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flow — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce Flow in depth: flow types, every element, resources and variables, $Record and $Record__Prior, entry conditions, scheduled and asynchronous paths, fault handling, invocable Apex, debugging, and worked examples.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="flow">
+<main class="content">
+<h1>Flow</h1>
+<p class="lede">Flow is Salesforce's declarative automation tool. It replaces Workflow Rules and Process Builder, and handles most automation that doesn't need code.</p>
+
+<h2>Flow types</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Type</th><th>Starts when</th><th>Runs as</th><th>Typical use</th></tr></thead>
+<tbody>
+<tr><td>Record-triggered — <b>Fast Field Updates</b> (before save)</td><td>Create/update, before the record is written</td><td>System context</td><td>Set fields on the triggering record. No DML needed, very fast.</td></tr>
+<tr><td>Record-triggered — <b>Actions and Related Records</b> (after save)</td><td>Create/update/delete, after the record is written</td><td>System context</td><td>Create/update other records, send email, call actions; scheduled and async paths.</td></tr>
+<tr><td>Screen flow</td><td>A user launches it: button, quick action, Lightning page, utility bar, Experience site</td><td>User context (by default)</td><td>Wizards, guided data entry, multi-step forms.</td></tr>
+<tr><td>Schedule-triggered</td><td>A date/time, once or recurring; optionally for each record matching a filter</td><td>System context</td><td>Nightly clean-up, reminders, batch updates.</td></tr>
+<tr><td>Autolaunched (no trigger)</td><td>Called by Apex, another flow, REST API, a button, or Agentforce</td><td>Configurable</td><td>Reusable subflows and agent actions.</td></tr>
+<tr><td>Platform event–triggered</td><td>A platform event message is received</td><td>Automated Process user</td><td>React to integration events.</td></tr>
+<tr><td>Orchestration</td><td>Record change or launch</td><td>—</td><td>Multi-step, multi-user processes with stages and work items (e.g. onboarding approvals).</td></tr>
+</tbody></table></div>
+
+<h2>Elements</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Element</th><th>Does</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Get Records</td><td>Queries records (SOQL)</td><td>Store first record or all records; choose fields. Counts toward the 100-query limit.</td></tr>
+<tr><td>Create / Update / Delete Records</td><td>DML</td><td>Pass a whole <b>collection</b> to do one DML for many records. Counts toward the 150-DML limit.</td></tr>
+<tr><td>Assignment</td><td>Sets variables; adds to collections</td><td>Operators: Equals, Add, Subtract, Add Item, Remove All…</td></tr>
+<tr><td>Decision</td><td>Branches on conditions</td><td>Outcomes evaluated top-down; first match wins. Has a Default outcome.</td></tr>
+<tr><td>Loop</td><td>Iterates a collection</td><td>Put Assignments inside the loop; put DML after it.</td></tr>
+<tr><td>Collection Filter / Collection Sort</td><td>Filter or sort a collection in memory</td><td>Avoids extra queries.</td></tr>
+<tr><td>Transform</td><td>Maps one collection/record shape to another</td><td>Replaces many Loop + Assignment patterns.</td></tr>
+<tr><td>Subflow</td><td>Calls another flow</td><td>Pass inputs, receive outputs. Build reusable pieces.</td></tr>
+<tr><td>Action</td><td>Calls an action</td><td>Send Email, Post to Chatter, Submit for Approval, invocable Apex, External Services, prompt templates, standard actions.</td></tr>
+<tr><td>Screen</td><td>Shows a UI (screen flows only)</td><td>Standard components, reactive components, custom LWCs.</td></tr>
+<tr><td>Wait / Pause</td><td>Pauses until a time or event</td><td>Autolaunched/orchestration contexts.</td></tr>
+<tr><td>Custom Error</td><td>Shows an error and rolls back the save</td><td>Record-triggered flows — like a validation rule built in Flow.</td></tr>
+<tr><td>Roll Back Records</td><td>Undo pending changes in the transaction</td><td>Use in fault paths in screen flows.</td></tr>
+</tbody></table></div>
+
+<h2>Resources</h2>
+<div class="defs">
+<div><b>Variable</b><p>Text, Number, Currency, Boolean, Date, Date/Time, Record (one sObject), Apex-defined type; single or collection. Tick <i>Available for input/output</i> to pass values in and out.</p></div>
+<div><b>Constant</b><p>A fixed value.</p></div>
+<div><b>Formula</b><p>Calculated on use, with the formula language: <code>{!$Record.Amount} * 0.1</code>, <code>TODAY() + 7</code>.</p></div>
+<div><b>Text template</b><p>Multi-line text with merge fields, plain or rich text — email bodies.</p></div>
+<div><b>Choice / record choice set / collection choice set</b><p>Options for screen picklists and radio buttons.</p></div>
+<div><b>Global variables</b><p><code>$Record</code>, <code>$Record__Prior</code>, <code>$User</code>, <code>$Profile</code>, <code>$Permission</code>, <code>$Flow.CurrentDate</code>, <code>$Flow.FaultMessage</code>, <code>$Label</code>, <code>$Setup</code>, <code>$Api.Partner_Server_URL_xxx</code>.</p></div>
+</div>
+
+<h2>Record-triggered flows in detail</h2>
+<h3>$Record and $Record__Prior</h3>
+<p><code>$Record</code> is the triggering record with its new values. In update-triggered flows, <code>$Record__Prior</code> holds the values before the change. Compare them to act only on a real change:</p>
+<script type="text/plain" data-lang="formula" data-title="Decision condition: stage changed to Closed Won">
+{!$Record.StageName} = "Closed Won" && {!$Record__Prior.StageName} <> "Closed Won"
+</script>
+<p>Parent fields are available without a Get Records: <code>{!$Record.Account.Owner.Email}</code>.</p>
+<h3>Entry conditions and "when to run"</h3>
+<ul>
+<li><b>Every time a record is updated and meets the condition requirements</b>: runs on every save while the condition is true.</li>
+<li><b>Only when a record is updated to meet the condition requirements</b>: runs once when the record goes from not-matching to matching. Usually what you want, and the only option that allows scheduled paths.</li>
+<li>Use entry conditions instead of a first Decision element: flows that don't match never start, which saves CPU.</li>
+</ul>
+<h3>Paths</h3>
+<div class="defs">
+<div><b>Run Immediately</b><p>Synchronous, inside the triggering transaction.</p></div>
+<div><b>Run Asynchronously</b><p>After the transaction commits, in a separate transaction with its own limits. Use for callouts and slow work.</p></div>
+<div><b>Scheduled paths</b><p>Run at a time relative to a date field or the trigger time: "3 days before Contract End Date", "1 hour after creation". Re-evaluated if the record changes. Monitor in Setup → Time-Based Workflow / Scheduled Jobs.</p></div>
+</div>
+<h3>Trigger order</h3>
+<p>With several record-triggered flows on the same object and timing, set <b>Trigger Order</b> (1–2000) on each so they run in a known sequence. Flows without one run after those with one, in an order you can't rely on. Many teams keep one before-save and one after-save flow per object, with decisions inside, or use Flow Trigger Explorer to see them all.</p>
+
+<h2>Fault handling</h2>
+<p>Any element that touches the database or calls an action can fail. Without a fault path, the whole transaction rolls back, the user sees "An unhandled fault has occurred", and the admin (or the flow's "last modified by" user) gets an email.</p>
+<ul>
+<li>Drag a <b>Fault</b> connector from the element to a handler.</li>
+<li>Log <code>{!$Flow.FaultMessage}</code> to a custom <code>Flow_Error__c</code> object or a platform event (platform events published "immediately" survive the rollback).</li>
+<li>In screen flows, show a friendly screen; in record-triggered flows, use <b>Custom Error</b> to show a clean message.</li>
+<li>Set <i>Process Automation Settings → Send Process or Flow Error Email to</i> a monitored mailbox.</li>
+</ul>
+
+<h2>Calling Apex from Flow</h2>
+<p>When Flow can't do something (complex parsing, a callout with logic, heavy calculations), expose Apex as an <b>invocable action</b>. Invocable methods are bulkified: Flow passes a list of requests, one per flow interview in the batch.</p>
+<script type="text/plain" data-lang="apex" data-title="An invocable action: calculate tax for many records">
+public with sharing class CalculateTaxAction {
+
+    public class Request {
+        @InvocableVariable(label='Amount' required=true)  public Decimal amount;
+        @InvocableVariable(label='Country code' required=true) public String country;
+    }
+    public class Result {
+        @InvocableVariable(label='Tax') public Decimal tax;
+        @InvocableVariable(label='Rate') public Decimal rate;
+    }
+
+    @InvocableMethod(label='Calculate tax' description='Returns tax for an amount and country' category='Finance')
+    public static List<Result> calculate(List<Request> requests) {
+        // One query for every interview in the batch
+        Map<String, Decimal> rates = new Map<String, Decimal>();
+        for (Tax_Rate__mdt r : Tax_Rate__mdt.getAll().values()) rates.put(r.Country__c, r.Rate__c);
+
+        List<Result> results = new List<Result>();
+        for (Request req : requests) {
+            Result res = new Result();
+            res.rate = rates.containsKey(req.country) ? rates.get(req.country) : 0;
+            res.tax = (req.amount * res.rate).setScale(2);
+            results.add(res);   // results must be in the same order as requests
+        }
+        return results;
+    }
+}
+</script>
+<p>Launch a flow from Apex:</p>
+<script type="text/plain" data-lang="apex" data-title="Start an autolaunched flow from Apex">
+Map<String, Object> inputs = new Map<String, Object>{ 'recordId' => acc.Id, 'reason' => 'Upgrade' };
+Flow.Interview f = Flow.Interview.createInterview('Account_Upgrade', inputs);
+f.start();
+String status = (String) f.getVariableValue('resultStatus');
+</script>
+
+<h2>Worked examples</h2>
+<h3>1. Default a field before save</h3>
+<p><b>Goal:</b> new opportunities get a Close Date 30 days out if blank, and a Next Step for the stage.</p>
+<ol>
+<li>Record-triggered, object Opportunity, <i>A record is created</i>, optimise for <b>Fast Field Updates</b>.</li>
+<li>Decision: <code>{!$Record.CloseDate} Is Null = True</code>.</li>
+<li>Assignment: <code>{!$Record.CloseDate}</code> Equals formula <code>TODAY() + 30</code>.</li>
+<li>No Update element is needed: before-save flows write directly to <code>$Record</code>.</li>
+</ol>
+<h3>2. Create a follow-up task when a deal is won</h3>
+<ol>
+<li>Record-triggered, Opportunity, <i>created or updated</i>, Actions and Related Records.</li>
+<li>Entry condition: <code>StageName Equals Closed Won</code>; run <i>only when updated to meet the condition</i>.</li>
+<li>Create Records: Task with <code>WhatId = {!$Record.Id}</code>, <code>OwnerId = {!$Record.OwnerId}</code>, <code>Subject = "Kick-off call"</code>, <code>ActivityDate = {!$Flow.CurrentDate} + 2</code> (formula).</li>
+<li>Fault path → Create Records on <code>Flow_Error__c</code> with <code>{!$Flow.FaultMessage}</code>.</li>
+</ol>
+<h3>3. Update all contacts when an account's address changes</h3>
+<ol>
+<li>Record-triggered on Account, updated, entry condition <code>ISCHANGED({!$Record.BillingStreet})</code> (use a formula entry condition).</li>
+<li>Get Records: Contacts where <code>AccountId = {!$Record.Id}</code>, all records.</li>
+<li>Loop over contacts → Assignment sets <code>MailingStreet</code> etc. on the loop variable → Assignment <b>Add</b> loop variable to <code>contactsToUpdate</code> collection.</li>
+<li>After the loop: <b>one</b> Update Records with <code>contactsToUpdate</code>.</li>
+</ol>
+<p>Even simpler: an Update Records element can update "records that meet conditions" (<code>AccountId = {!$Record.Id}</code>) and set fields directly, with no loop.</p>
+<h3>4. Renewal reminder 60 days before contract end</h3>
+<ol>
+<li>Record-triggered on Contract, created or updated, entry condition <code>Status = Activated</code>, run only when updated to meet the condition.</li>
+<li>Scheduled path: <b>60 days before</b> <code>EndDate</code>.</li>
+<li>On that path: Create a renewal Opportunity and send an email alert to the account owner.</li>
+</ol>
+<h3>5. A screen flow to log a customer escalation</h3>
+<ol>
+<li>Screen flow with input variable <code>recordId</code> (Text, available for input) — Lightning pages pass the current record ID automatically.</li>
+<li>Get Records: the Case by <code>recordId</code>.</li>
+<li>Screen: picklist for Severity, long text for Summary, a checkbox "Notify account owner"; use conditional visibility to show a manager lookup only for Severity = Critical.</li>
+<li>Update Records: set <code>Escalated__c = true</code>, <code>Priority</code> from Severity.</li>
+<li>Decision on the checkbox → Send Email action.</li>
+<li>Add the flow to the Case page as a quick action (Object Manager → Case → Buttons, Links and Actions → New Action → Flow).</li>
+</ol>
+
+<h2>Testing and debugging</h2>
+<ul>
+<li><b>Debug</b> button in Flow Builder: run with chosen inputs, as another user, with or without committing (rollback mode), and see every element's values.</li>
+<li><b>Flow tests</b> (record-triggered flows): define the triggering record and assertions, and run them from Flow Builder.</li>
+<li>Apex tests that perform DML also execute your flows, so flow failures show up in Apex test runs and deployments.</li>
+<li>Debug logs record flow execution under the <b>Workflow</b> category (<code>FLOW_ELEMENT_BEGIN</code>, <code>FLOW_ELEMENT_ERROR</code>).</li>
+<li><b>Paused and failed flow interviews</b>: Setup → Paused And Failed Flow Interviews.</li>
+</ul>
+
+<h2>Versions and deployment</h2>
+<ul>
+<li>Every save creates a new <b>version</b>; only one version is active. Running interviews (paused flows, scheduled paths) keep using the version they started on.</li>
+<li>Deploy flows with change sets, DevOps Center or the CLI (metadata type <code>Flow</code>). In production, flows deploy as inactive unless "Deploy processes and flows as active" is enabled in Process Automation Settings — which then requires test coverage for record-triggered/autolaunched flows.</li>
+</ul>
+
+<h2>Best practices</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Practice</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>No Get/Create/Update/Delete inside a Loop</td><td>Each iteration costs a query or DML; 101 records in a loop with a Get Records = limit exception.</td></tr>
+<tr><td>Use before-save for same-record updates</td><td>Much faster; no extra DML; doesn't re-trigger automation.</td></tr>
+<tr><td>Use entry conditions</td><td>Flows that don't match never start.</td></tr>
+<tr><td>Fault paths on every DML/action</td><td>Clean errors instead of rollback emails.</td></tr>
+<tr><td>Subflows for shared logic</td><td>One place to change; smaller flows.</td></tr>
+<tr><td>Don't hardcode IDs</td><td>Use Get Records by DeveloperName, custom metadata, or custom labels.</td></tr>
+<tr><td>Name elements clearly and fill in descriptions</td><td>Flows are read far more often than they're written.</td></tr>
+<tr><td>Know when to switch to Apex</td><td>Complex logic, heavy volume, or many interacting branches are easier to test and maintain in code. See <a href="decisions.html">Which one do I pick?</a></td></tr>
+</tbody></table></div>
+
+<h2>Migrating Workflow Rules and Process Builder</h2>
+<p>Setup → <b>Migrate to Flow</b> converts most workflow rules and processes into record-triggered flows. Review each result: combine flows per object, convert same-record field updates to before-save, and test. Deactivate the old automation once the new flow is live.</p>
+
+<h2>Approvals</h2>
+<p><b>Approval processes</b> (Setup → Approval Processes) define entry criteria, approvers (manager, a user, a queue, a related user field), steps, record locking, and actions on submit, approve, reject and recall. Submit from a button, Flow (Submit for Approval action) or Apex (<code>Approval.process(new Approval.ProcessSubmitRequest())</code>). For multi-stage approvals with parallel approvers and richer UI, use Flow Approval Processes built on Orchestration.</p>
+</main>
+</body>
+</html>

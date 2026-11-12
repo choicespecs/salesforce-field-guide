@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Asynchronous Apex — Salesforce Field Guide</title>
+<meta name="description" content="Queueable, future, Batch and Schedulable Apex with examples: chaining, finalizers, delays, Database.Stateful, cron expressions, monitoring with AsyncApexJob, and choosing between them.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="async-apex">
+<main class="content">
+<h1>Asynchronous Apex</h1>
+<p class="lede">Async Apex runs later, in its own transaction, with higher limits (200 SOQL queries, 60 s CPU, 12 MB heap). Use it for callouts after DML, slow work you don't want users to wait for, and processing large volumes.</p>
+
+<h2>Comparison</h2>
+<div class="tablewrap"><table>
+<thead><tr><th></th><th>Queueable</th><th>@future</th><th>Batch</th><th>Schedulable</th></tr></thead>
+<tbody>
+<tr><td>Start with</td><td><code>System.enqueueJob(job)</code></td><td>Call the static method</td><td><code>Database.executeBatch(job, size)</code></td><td><code>System.schedule(name, cron, job)</code></td></tr>
+<tr><td>Parameters</td><td>Any (object state)</td><td>Primitives and collections of primitives only</td><td>Object state</td><td>Object state</td></tr>
+<tr><td>Returns a job ID</td><td>Yes</td><td>No</td><td>Yes</td><td>Yes (CronTrigger)</td></tr>
+<tr><td>Chaining</td><td>Enqueue one job from <code>execute</code></td><td>No</td><td>Start another batch from <code>finish</code></td><td>Usually starts a batch</td></tr>
+<tr><td>Callouts</td><td><code>Database.AllowsCallouts</code></td><td><code>@future(callout=true)</code></td><td><code>Database.AllowsCallouts</code></td><td>Not directly — enqueue a job</td></tr>
+<tr><td>Volume</td><td>Moderate</td><td>Small</td><td>Up to 50 million records via QueryLocator</td><td>—</td></tr>
+<tr><td>Per-transaction cap</td><td>50 enqueued per sync transaction; 1 from an async one</td><td>50 per transaction; none from batch/future</td><td>5 running at once, 100 waiting in the flex queue</td><td>100 scheduled jobs per org</td></tr>
+</tbody></table></div>
+
+<h2>Queueable</h2>
+<script type="text/plain" data-lang="apex" data-title="A queueable with a callout, chaining and a finalizer">
+public class ErpAccountSyncJob implements Queueable, Database.AllowsCallouts {
+    private final List<Id> accountIds;
+    private static final Integer CHUNK = 50;
+
+    public ErpAccountSyncJob(Set<Id> ids) { this.accountIds = new List<Id>(ids); }
+
+    public void execute(QueueableContext ctx) {
+        System.attachFinalizer(new SyncFinalizer(accountIds));   // runs even if this job fails
+
+        List<Id> now = new List<Id>();
+        List<Id> later = new List<Id>();
+        for (Integer i = 0; i < accountIds.size(); i++) {
+            if (i < CHUNK) now.add(accountIds[i]); else later.add(accountIds[i]);
+        }
+
+        List<Account> accs = [SELECT Id, Name, BillingStreet, ERP_Id__c FROM Account WHERE Id IN :now];
+        for (Account a : accs) {
+            HttpRequest req = new HttpRequest();
+            req.setEndpoint('callout:ERP/customers/' + a.ERP_Id__c);
+            req.setMethod('PUT');
+            req.setHeader('Content-Type', 'application/json');
+            req.setBody(JSON.serialize(new Map<String, Object>{ 'name' => a.Name, 'street' => a.BillingStreet }));
+            HttpResponse res = new Http().send(req);
+            a.ERP_Sync_Status__c = res.getStatusCode() < 300 ? 'Synced' : 'Error ' + res.getStatusCode();
+        }
+        update accs;   // DML after callouts is fine
+
+        if (!later.isEmpty()) System.enqueueJob(new ErpAccountSyncJob(new Set<Id>(later)));  // chain
+    }
+}
+
+public class SyncFinalizer implements Finalizer {
+    private final List<Id> ids;
+    public SyncFinalizer(List<Id> ids) { this.ids = ids; }
+    public void execute(FinalizerContext ctx) {
+        if (ctx.getResult() == ParentJobResult.UNHANDLED_EXCEPTION) {
+            insert new Integration_Log__c(Message__c = ctx.getException().getMessage(),
+                                          Record_Ids__c = String.join(ids, ','));
+        }
+    }
+}
+</script>
+<ul>
+<li><b>Delay</b>: <code>System.enqueueJob(job, 5)</code> starts it after 5 minutes (0–10).</li>
+<li><b>Check status</b>: <code>[SELECT Status, NumberOfErrors, ExtendedStatus FROM AsyncApexJob WHERE Id = :jobId]</code>.</li>
+<li><b>Guard chaining</b> in tests: only one chained job runs; check <code>Test.isRunningTest()</code> or use <code>AsyncOptions</code> to cap depth.</li>
+<li>Prefer Queueable over <code>@future</code> for anything new.</li>
+</ul>
+
+<h2>@future</h2>
+<script type="text/plain" data-lang="apex">
+public class GeoService {
+    @future(callout=true)
+    public static void geocode(Set<Id> accountIds) {          // primitives only — pass IDs, not records
+        List<Account> accs = [SELECT Id, BillingCity FROM Account WHERE Id IN :accountIds];
+        // ... call the geocoding API, set BillingLatitude/Longitude ...
+        update accs;
+    }
+}
+// GeoService.geocode(new Map<Id, Account>(Trigger.new).keySet());
+</script>
+<p>Future methods can't be called from another future or batch context, can't be chained, and give no job ID. They're also a classic way to avoid <code>MIXED_DML_OPERATION</code> (update a User in a future method).</p>
+
+<h2>Batch Apex</h2>
+<script type="text/plain" data-lang="apex" data-title="Close stale leads, keeping a running count">
+public class StaleLeadBatch implements Database.Batchable<SObject>, Database.Stateful {
+    private Integer closed = 0;                       // kept across chunks thanks to Stateful
+    private List<String> errors = new List<String>();
+
+    public Database.QueryLocator start(Database.BatchableContext bc) {
+        return Database.getQueryLocator([
+            SELECT Id, Status FROM Lead
+            WHERE IsConverted = false AND LastActivityDate < LAST_N_DAYS:180
+        ]);
+    }
+
+    public void execute(Database.BatchableContext bc, List<Lead> scope) {
+        for (Lead l : scope) l.Status = 'Closed - Not Converted';
+        Database.SaveResult[] rs = Database.update(scope, false);
+        for (Integer i = 0; i < rs.size(); i++) {
+            if (rs[i].isSuccess()) closed++;
+            else errors.add(scope[i].Id + ': ' + rs[i].getErrors()[0].getMessage());
+        }
+    }
+
+    public void finish(Database.BatchableContext bc) {
+        AsyncApexJob job = [SELECT TotalJobItems, NumberOfErrors FROM AsyncApexJob WHERE Id = :bc.getJobId()];
+        Messaging.SingleEmailMessage m = new Messaging.SingleEmailMessage();
+        m.setToAddresses(new List<String>{ 'crm-admins@example.com' });
+        m.setSubject('Stale lead batch: ' + closed + ' closed, ' + errors.size() + ' errors');
+        m.setPlainTextBody(String.join(errors, '\n'));
+        Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ m });
+    }
+}
+
+// Run with chunks of 200 (default) — or smaller if each record does heavy work
+Id jobId = Database.executeBatch(new StaleLeadBatch(), 200);
+</script>
+<ul>
+<li><b>Each <code>execute</code> call is its own transaction</b> with fresh limits. A failure in one chunk doesn't roll back the others.</li>
+<li><b>Scope size</b>: 1–2,000 (default 200). Use smaller scopes when each record makes callouts or heavy queries.</li>
+<li><b>Iterable start</b>: return an <code>Iterable&lt;SObject&gt;</code> (or any type) instead of a QueryLocator for non-SOQL sources; limited to 50,000 items.</li>
+<li><b>Callouts</b>: implement <code>Database.AllowsCallouts</code>; up to 100 callouts per <code>execute</code>.</li>
+<li><b>Abort</b>: <code>System.abortJob(jobId)</code> or Setup → Apex Jobs.</li>
+</ul>
+
+<h2>Schedulable</h2>
+<script type="text/plain" data-lang="apex">
+public class NightlyJobs implements Schedulable {
+    public void execute(SchedulableContext sc) {
+        Database.executeBatch(new StaleLeadBatch(), 200);
+    }
+}
+
+// Every day at 02:00 (org time zone)
+String jobId = System.schedule('Nightly stale leads', '0 0 2 * * ?', new NightlyJobs());
+
+// Or run once, N minutes from now
+System.scheduleBatch(new StaleLeadBatch(), 'One-off stale leads', 10);
+</script>
+<h3>Cron expressions</h3>
+<p>Format: <code>Seconds Minutes Hours Day_of_month Month Day_of_week [Year]</code>. Use <code>?</code> in one of day-of-month or day-of-week.</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Expression</th><th>Runs</th></tr></thead>
+<tbody>
+<tr><td><code>0 0 2 * * ?</code></td><td>Every day at 02:00</td></tr>
+<tr><td><code>0 30 8 ? * MON-FRI</code></td><td>Weekdays at 08:30</td></tr>
+<tr><td><code>0 0 0 1 * ?</code></td><td>Midnight on the 1st of every month</td></tr>
+<tr><td><code>0 0 18 L * ?</code></td><td>18:00 on the last day of every month</td></tr>
+<tr><td><code>0 0 9 ? * 2#1</code></td><td>09:00 on the first Monday of every month</td></tr>
+<tr><td><code>0 0 * * * ?</code></td><td>Every hour, on the hour</td></tr>
+</tbody></table></div>
+<div class="callout"><b>Scheduled classes are locked.</b> While a class is scheduled, you can't deploy changes to it (or classes it references) unless "Allow deployments of components when corresponding Apex jobs are pending or in progress" is enabled in Deployment Settings. Keep the Schedulable thin and put logic in other classes.</div>
+
+<h2>Monitoring</h2>
+<script type="text/plain" data-lang="soql" data-title="Recent async jobs and failures">
+SELECT Id, ApexClass.Name, JobType, Status, JobItemsProcessed, TotalJobItems,
+       NumberOfErrors, ExtendedStatus, CreatedDate, CompletedDate
+FROM AsyncApexJob
+WHERE CreatedDate = LAST_N_DAYS:1
+ORDER BY CreatedDate DESC
+</script>
+<script type="text/plain" data-lang="soql" data-title="Scheduled jobs">
+SELECT Id, CronJobDetail.Name, CronExpression, State, NextFireTime, PreviousFireTime
+FROM CronTrigger
+ORDER BY NextFireTime
+</script>
+<p>In Setup: <b>Apex Jobs</b>, <b>Scheduled Jobs</b>, <b>Apex Flex Queue</b> (reorder waiting batches). The org-wide daily async limit is the greater of 250,000 or 200 × user licences.</p>
+
+<h2>Other async options</h2>
+<ul>
+<li><b>Platform events</b> published from Apex and handled by a trigger or flow run in a separate transaction as the Automated Process user — a decoupled alternative to Queueable (<a href="events.html">Events</a>).</li>
+<li><b>Asynchronous paths</b> in record-triggered flows.</li>
+<li><b>Apex Cursors</b> (<code>Database.getCursor</code>) let queueables page through very large query results across chained jobs.</li>
+</ul>
+</main>
+</body>
+</html>

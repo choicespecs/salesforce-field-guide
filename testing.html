@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Testing Apex — Salesforce Field Guide</title>
+<meta name="description" content="Apex testing in depth: coverage rules, @IsTest and @TestSetup, test data factories, the Assert class, Test.startTest, System.runAs, testing triggers, async Apex, callouts with HttpCalloutMock, platform events, exceptions, and the Stub API.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="testing">
+<main class="content">
+<h1>Testing Apex</h1>
+<p class="lede">Tests are required to deploy Apex to production, but their real job is to prove behaviour and catch regressions. Good tests are bulk, assert outcomes, and run as realistic users.</p>
+
+<h2>The rules</h2>
+<ul>
+<li>At least <b>75%</b> of Apex lines across the org must be covered, every trigger must have some coverage, and all tests must pass to deploy to production.</li>
+<li>Tests run against an <b>empty database</b>: they can't see org data (except setup objects like Users, Profiles, RecordTypes) unless annotated <code>@IsTest(SeeAllData=true)</code> — avoid it.</li>
+<li>All data created in a test is <b>rolled back</b> at the end. No emails are actually sent; callouts must be mocked.</li>
+<li>Test classes and methods are annotated <code>@IsTest</code> and don't count toward the org's Apex size limit.</li>
+</ul>
+
+<h2>Anatomy of a test class</h2>
+<script type="text/plain" data-lang="apex" data-title="OpportunityServiceTest.cls">
+@IsTest
+private class OpportunityServiceTest {
+
+    @TestSetup
+    static void makeData() {
+        // Runs once; each test method gets a fresh copy of this data
+        Account acc = TestDataFactory.account('Test Co', true);
+        TestDataFactory.opportunities(acc.Id, 200, true);
+    }
+
+    @IsTest
+    static void wonOpportunitiesGetOnboardingTasks() {
+        List<Opportunity> opps = [SELECT Id FROM Opportunity];
+        for (Opportunity o : opps) o.StageName = 'Closed Won';
+
+        Test.startTest();                       // fresh governor limits from here
+        update opps;
+        Test.stopTest();                        // async work queued above runs now
+
+        Integer tasks = [SELECT COUNT() FROM Task WHERE Subject = 'Kick-off call'];
+        Assert.areEqual(200, tasks, 'Each won opportunity should get one task');
+    }
+
+    @IsTest
+    static void noTasksWhenStageUnchanged() {
+        List<Opportunity> opps = [SELECT Id, Name FROM Opportunity];
+        for (Opportunity o : opps) o.Name += ' (edited)';
+        update opps;
+        Assert.areEqual(0, [SELECT COUNT() FROM Task], 'No tasks for unrelated edits');
+    }
+
+    @IsTest
+    static void cannotCloseWithoutProducts() {
+        Opportunity o = [SELECT Id FROM Opportunity LIMIT 1];
+        o.StageName = 'Closed Won';
+        try {
+            update o;
+            Assert.fail('Expected a DmlException');
+        } catch (DmlException e) {
+            Assert.isTrue(e.getMessage().contains('Add at least one product'), e.getMessage());
+        }
+    }
+}
+</script>
+
+<h2>Assertions</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Method</th><th>Checks</th></tr></thead>
+<tbody>
+<tr><td><code>Assert.areEqual(expected, actual, msg)</code></td><td>Equality</td></tr>
+<tr><td><code>Assert.areNotEqual(a, b, msg)</code></td><td>Inequality</td></tr>
+<tr><td><code>Assert.isTrue(cond, msg)</code> / <code>isFalse</code></td><td>Booleans</td></tr>
+<tr><td><code>Assert.isNull(v, msg)</code> / <code>isNotNull</code></td><td>Null checks</td></tr>
+<tr><td><code>Assert.isInstanceOfType(obj, Type, msg)</code></td><td>Type</td></tr>
+<tr><td><code>Assert.fail(msg)</code></td><td>Fails immediately (e.g. after code that should have thrown)</td></tr>
+</tbody></table></div>
+<p>The older <code>System.assertEquals</code> family still works. Always pass a message: it's what you'll read when a deployment fails at 11pm.</p>
+
+<h2>Test data factory</h2>
+<script type="text/plain" data-lang="apex" data-title="TestDataFactory.cls">
+@IsTest
+public class TestDataFactory {
+
+    public static Account account(String name, Boolean doInsert) {
+        Account a = new Account(Name = name, Industry = 'Technology', BillingCountry = 'US');
+        if (doInsert) insert a;
+        return a;
+    }
+
+    public static List<Opportunity> opportunities(Id accountId, Integer n, Boolean doInsert) {
+        List<Opportunity> opps = new List<Opportunity>();
+        for (Integer i = 0; i < n; i++) {
+            opps.add(new Opportunity(Name = 'Opp ' + i, AccountId = accountId,
+                StageName = 'Prospecting', CloseDate = Date.today().addDays(30), Amount = 1000));
+        }
+        if (doInsert) insert opps;
+        return opps;
+    }
+
+    public static User user(String permSetName) {
+        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        String uniq = String.valueOf(Crypto.getRandomInteger()).replace('-', '');
+        User u = new User(
+            ProfileId = p.Id, LastName = 'Tester', Alias = 'tst' + uniq.left(4),
+            Email = 'tester@example.com', Username = 'tester' + uniq + '@example.com.test',
+            TimeZoneSidKey = 'America/New_York', LocaleSidKey = 'en_US',
+            EmailEncodingKey = 'UTF-8', LanguageLocaleKey = 'en_US');
+        insert u;
+        if (permSetName != null) {
+            Id psId = [SELECT Id FROM PermissionSet WHERE Name = :permSetName].Id;
+            insert new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = psId);
+        }
+        return u;
+    }
+}
+</script>
+<p>Keep required fields and validation-rule-friendly values in one place, so a new validation rule means one fix, not fifty.</p>
+
+<h2>Running as another user</h2>
+<script type="text/plain" data-lang="apex">
+@IsTest
+static void salesRepCannotSeeOthersPrivateOpps() {
+    User rep = TestDataFactory.user('Sales_Rep');
+    System.runAs(rep) {
+        // record sharing is enforced for the runAs user in with-sharing code
+        List<Opportunity> visible = OpportunitySelector.myOpenOpportunities();
+        Assert.areEqual(0, visible.size(), 'Rep should not see opportunities owned by others');
+    }
+}
+</script>
+<p><code>System.runAs</code> enforces record sharing and lets you test as a specific user, but doesn't enforce object/field permissions on its own — code using <code>WITH USER_MODE</code> or <code>as user</code> does. It also starts a new context, so you can insert setup objects (User, PermissionSetAssignment) and regular records in the same test without <code>MIXED_DML_OPERATION</code>.</p>
+
+<h2>Testing async Apex</h2>
+<p>Async jobs enqueued between <code>Test.startTest()</code> and <code>Test.stopTest()</code> run synchronously at <code>stopTest()</code>.</p>
+<script type="text/plain" data-lang="apex">
+@IsTest
+static void batchClosesStaleLeads() {
+    List<Lead> leads = new List<Lead>();
+    for (Integer i = 0; i < 50; i++) leads.add(new Lead(LastName = 'L' + i, Company = 'C'));
+    insert leads;
+    // LastActivityDate can't be set in a test, so the batch's start() query would find nothing.
+    // Unit-test execute() directly with a scope list instead:
+    Test.startTest();
+    new StaleLeadBatch().execute(null, leads);
+    Test.stopTest();
+    // When start() can match test data, run the whole thing instead:
+    //   Test.startTest(); Database.executeBatch(new MyBatch()); Test.stopTest();
+
+    Assert.areEqual(50, [SELECT COUNT() FROM Lead WHERE Status = 'Closed - Not Converted']);
+}
+
+@IsTest
+static void scheduleRegisters() {
+    Test.startTest();
+    String id = System.schedule('Test job', '0 0 2 * * ?', new NightlyJobs());
+    Test.stopTest();
+    CronTrigger ct = [SELECT CronExpression, TimesTriggered FROM CronTrigger WHERE Id = :id];
+    Assert.areEqual('0 0 2 * * ?', ct.CronExpression);
+}
+</script>
+
+<h2>Mocking HTTP callouts</h2>
+<script type="text/plain" data-lang="apex" data-title="HttpCalloutMock">
+@IsTest
+public class ErpMock implements HttpCalloutMock {
+    private final Integer status;
+    public ErpMock(Integer status) { this.status = status; }
+
+    public HttpResponse respond(HttpRequest req) {
+        Assert.isTrue(req.getEndpoint().startsWith('callout:ERP/'), 'Uses the named credential');
+        HttpResponse res = new HttpResponse();
+        res.setStatusCode(status);
+        res.setHeader('Content-Type', 'application/json');
+        res.setBody('{"ok":' + (status < 300) + '}');
+        return res;
+    }
+}
+
+@IsTest
+static void syncMarksAccountsSynced() {
+    Account a = TestDataFactory.account('Acme', true);
+    Test.setMock(HttpCalloutMock.class, new ErpMock(200));
+    Test.startTest();
+    System.enqueueJob(new ErpAccountSyncJob(new Set<Id>{ a.Id }));
+    Test.stopTest();
+    Assert.areEqual('Synced', [SELECT ERP_Sync_Status__c FROM Account WHERE Id = :a.Id].ERP_Sync_Status__c);
+}
+</script>
+<p>For several endpoints in one test, write a mock that switches on <code>req.getEndpoint()</code>, or use <code>MultiStaticResourceCalloutMock</code> with JSON files stored as static resources.</p>
+
+<h2>Testing platform events and CDC</h2>
+<script type="text/plain" data-lang="apex">
+Test.startTest();
+EventBus.publish(new Order_Shipped__e(Order_Number__c = 'SO-1'));
+Test.stopTest();                    // delivers the event; subscriber triggers run
+// or, mid-test: Test.getEventBus().deliver();
+
+// Change Data Capture
+Test.enableChangeDataCapture();
+insert new Account(Name = 'CDC test');
+Test.getEventBus().deliver();       // AccountChangeEvent triggers run
+</script>
+
+<h2>Mocking dependencies with the Stub API</h2>
+<script type="text/plain" data-lang="apex">
+// Production class depends on an interface or a virtual class
+public virtual class PricingClient { public virtual Decimal priceFor(String sku) { return null; } }
+
+@IsTest
+public class PricingStub implements System.StubProvider {
+    public Object handleMethodCall(Object stubbed, String method, Type returnType,
+                                   List<Type> paramTypes, List<String> paramNames, List<Object> args) {
+        if (method == 'priceFor') return 42.0;
+        return null;
+    }
+}
+
+PricingClient mock = (PricingClient) Test.createStub(PricingClient.class, new PricingStub());
+QuoteService svc = new QuoteService(mock);           // dependency injection via constructor
+Assert.areEqual(42.0, svc.unitPrice('SKU-1'));
+</script>
+<p>Frameworks like ApexMocks (part of fflib) build on the Stub API with Mockito-style syntax.</p>
+
+<h2>Other Test helpers</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Method</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td><code>Test.isRunningTest()</code></td><td>Branch in production code (use sparingly)</td></tr>
+<tr><td><code>Test.getStandardPricebookId()</code></td><td>The standard price book in tests</td></tr>
+<tr><td><code>Test.setCreatedDate(id, datetime)</code></td><td>Backdate CreatedDate</td></tr>
+<tr><td><code>Test.setFixedSearchResults(ids)</code></td><td>Control SOSL results</td></tr>
+<tr><td><code>Test.loadData(Account.SObjectType, 'staticResourceName')</code></td><td>Load records from a CSV static resource</td></tr>
+<tr><td><code>@TestVisible</code></td><td>Let tests access private members</td></tr>
+<tr><td><code>Test.setCurrentPage(page)</code>, <code>RestContext.request = req</code></td><td>Set Visualforce or REST context</td></tr>
+</tbody></table></div>
+
+<h2>Running tests</h2>
+<script type="text/plain" data-lang="bash">
+# All local tests with coverage, human-readable
+sf apex run test --test-level RunLocalTests --code-coverage --result-format human --wait 20
+
+# Specific classes or methods
+sf apex run test --class-names OpportunityServiceTest --tests OpportunityServiceTest.cannotCloseWithoutProducts --wait 10
+
+# Get results of an earlier run
+sf apex get test --test-run-id 707XXXXXXXXXXXX --code-coverage
+</script>
+<p>In the Developer Console: Test → New Run; coverage shows per class (blue = covered, red = not). In VS Code, click "Run Test" above a method.</p>
+</main>
+</body>
+</html>

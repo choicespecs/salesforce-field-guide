@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Apex language — Salesforce Field Guide</title>
+<meta name="description" content="Apex language reference with examples: primitive types, collections, sObjects, classes, interfaces, inheritance, enums, exceptions, DML and Database methods, savepoints, strings, dates, JSON, maps of IDs, and user-mode security.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="apex">
+<main class="content">
+<h1>Apex language</h1>
+<p class="lede">Apex is a strongly typed, object-oriented language with Java-like syntax that runs on Salesforce's servers. It has the database built in: queries and DML are part of the language. Every line runs inside <a href="limits.html">governor limits</a>.</p>
+
+<h2>Where Apex runs</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Entry point</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td>Triggers</td><td><code>trigger AccountTrigger on Account (before insert) { … }</code></td></tr>
+<tr><td>LWC / Aura controllers</td><td><code>@AuraEnabled</code> methods</td></tr>
+<tr><td>Flow</td><td><code>@InvocableMethod</code> actions</td></tr>
+<tr><td>Async jobs</td><td>Queueable, Batch, Schedulable, <code>@future</code></td></tr>
+<tr><td>Web services</td><td><code>@RestResource</code> classes, SOAP <code>webservice</code> methods</td></tr>
+<tr><td>Anonymous Apex</td><td>Developer Console → Debug → Open Execute Anonymous, or <code>sf apex run</code></td></tr>
+<tr><td>Email services, Visualforce controllers, post-install scripts</td><td><code>Messaging.InboundEmailHandler</code>, etc.</td></tr>
+</tbody></table></div>
+
+<h2>Types and variables</h2>
+<script type="text/plain" data-lang="apex" data-title="Primitives">
+Integer i = 42;                 // 32-bit
+Long big = 9000000000L;         // 64-bit
+Decimal price = 19.99;          // arbitrary precision — use for money
+Double ratio = 0.333;           // floating point
+Boolean flag = true;            // can also be null!
+String name = 'Acme';           // single quotes only
+Id accId = '001000000000001AAA';
+Date d = Date.newInstance(2026, 11, 12);
+Datetime dt = Datetime.now();
+Time t = Time.newInstance(9, 30, 0, 0);
+Blob b = Blob.valueOf('hello');
+Object anything = 5;            // any type; cast to use it
+
+// Every uninitialised variable is null, including Integer and Boolean
+Integer count;
+System.debug(count == null);    // true
+
+// Type conversion
+Integer n = Integer.valueOf('12');
+String s = String.valueOf(3.14);
+Decimal dd = Decimal.valueOf('10.50').setScale(2, RoundingMode.HALF_UP);
+</script>
+<h3>Null-safe operators</h3>
+<script type="text/plain" data-lang="apex">
+String city = acc?.BillingCity;                // null if acc is null
+String owner = opp?.Account?.Owner?.Name;
+String label = acc.Name ?? 'Unnamed';          // null-coalescing
+Integer size = contacts?.size() ?? 0;
+</script>
+
+<h2>Collections</h2>
+<script type="text/plain" data-lang="apex" data-title="List, Set, Map">
+// List: ordered, allows duplicates
+List<String> colors = new List<String>{ 'red', 'green' };
+colors.add('blue');
+colors.addAll(new List<String>{ 'cyan', 'red' });
+String first = colors[0];
+colors.sort();
+Boolean hasRed = colors.contains('red');
+
+// Set: unique values, unordered
+Set<Id> accountIds = new Set<Id>();
+for (Contact c : contacts) accountIds.add(c.AccountId);
+accountIds.remove(null);
+
+// Map: key → value
+Map<String, Integer> stock = new Map<String, Integer>{ 'apples' => 10 };
+stock.put('pears', 4);
+Integer apples = stock.get('apples');        // null if missing
+if (!stock.containsKey('plums')) stock.put('plums', 0);
+for (String fruit : stock.keySet()) System.debug(fruit + ': ' + stock.get(fruit));
+
+// The most useful Salesforce idiom: a Map of records by Id straight from a query
+Map<Id, Account> accounts = new Map<Id, Account>(
+    [SELECT Id, Name, OwnerId FROM Account WHERE Id IN :accountIds]);
+
+// Group records by a field
+Map<Id, List<Contact>> contactsByAccount = new Map<Id, List<Contact>>();
+for (Contact c : contacts) {
+    if (!contactsByAccount.containsKey(c.AccountId)) {
+        contactsByAccount.put(c.AccountId, new List<Contact>());
+    }
+    contactsByAccount.get(c.AccountId).add(c);
+}
+</script>
+
+<h2>sObjects</h2>
+<script type="text/plain" data-lang="apex" data-title="Working with records">
+Account acc = new Account(Name = 'Acme', Industry = 'Technology');
+acc.AnnualRevenue = 5000000;
+insert acc;                                  // acc.Id is now set
+
+// Generic sObject access by field name
+SObject rec = acc;
+rec.put('Rating', 'Hot');
+Object v = rec.get('Name');
+String typeName = rec.getSObjectType().getDescribe().getName();   // 'Account'
+
+// Parent and child traversal from a query
+Contact c = [SELECT Id, Account.Name, Account.Owner.Email FROM Contact LIMIT 1];
+System.debug(c.Account.Owner.Email);
+
+Account withKids = [SELECT Id, (SELECT Id, LastName FROM Contacts) FROM Account LIMIT 1];
+for (Contact k : withKids.Contacts) System.debug(k.LastName);
+
+// Set a relationship by external ID without querying
+Contact newC = new Contact(LastName = 'Lovelace',
+                           Account = new Account(ERP_Id__c = 'ERP-1001'));
+insert newC;
+</script>
+
+<h2>Control flow</h2>
+<script type="text/plain" data-lang="apex">
+if (amount > 100000) {
+    tier = 'Large';
+} else if (amount > 10000) {
+    tier = 'Medium';
+} else {
+    tier = 'Small';
+}
+
+for (Integer i = 0; i < 10; i++) { }
+for (Account a : accounts) { }
+while (queue.size() > 0) { queue.remove(0); }
+do { attempts++; } while (attempts < 3);
+
+// switch works on Integer, Long, String, sObject type and enums
+switch on opp.StageName {
+    when 'Closed Won'  { handleWon(opp); }
+    when 'Closed Lost', 'Disqualified' { handleLost(opp); }
+    when null { }
+    when else { }
+}
+
+switch on record {                 // by sObject type
+    when Account a { System.debug('Account ' + a.Name); }
+    when Contact c { System.debug('Contact ' + c.LastName); }
+}
+</script>
+
+<h2>Classes</h2>
+<script type="text/plain" data-lang="apex" data-title="A service class">
+public with sharing class DiscountService {
+
+    // Constants and static members are shared within the transaction
+    public static final Decimal MAX_DISCOUNT = 0.30;
+    private static Integer callCount = 0;
+
+    // Instance members
+    private final Map<String, Decimal> rates;
+
+    public DiscountService(Map<String, Decimal> rates) {   // constructor
+        this.rates = rates;
+    }
+
+    public Decimal discountFor(String tier) {
+        callCount++;
+        Decimal r = rates.get(tier) ?? 0;
+        return Math.min(r, MAX_DISCOUNT);
+    }
+
+    // Property with a custom getter
+    public Integer ruleCount { get { return rates.size(); } }
+
+    // Auto-property, read-only from outside
+    public String lastError { get; private set; }
+
+    // Inner class
+    public class Quote {
+        public Decimal listPrice;
+        public Decimal net() { return listPrice * (1 - MAX_DISCOUNT); }
+    }
+}
+</script>
+<div class="defs">
+<div><b>Access modifiers</b><p><code>private</code> (default), <code>protected</code>, <code>public</code> (within the namespace), <code>global</code> (across namespaces — needed for managed packages, REST resources, and some interfaces).</p></div>
+<div><b>Sharing keywords</b><p><code>with sharing</code>, <code>without sharing</code>, <code>inherited sharing</code>. See <a href="security.html">Security</a>. Always declare one.</p></div>
+<div><b>Static</b><p>Statics live for one transaction only — there's no state between requests. Use them for caches and recursion flags within a transaction.</p></div>
+<div><b>Class size</b><p>A single class can be up to 1 million characters; the whole org can hold 6 MB of Apex (excluding tests and managed packages).</p></div>
+</div>
+
+<h3>Interfaces, abstract classes, inheritance</h3>
+<script type="text/plain" data-lang="apex">
+public interface Notifier {
+    void send(String recipient, String message);
+}
+
+public class EmailNotifier implements Notifier {
+    public void send(String recipient, String message) {
+        Messaging.SingleEmailMessage m = new Messaging.SingleEmailMessage();
+        m.setToAddresses(new List<String>{ recipient });
+        m.setSubject('Notification');
+        m.setPlainTextBody(message);
+        Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ m });
+    }
+}
+
+public abstract class Shape {
+    public abstract Decimal area();
+    public virtual String describe() { return 'Area: ' + area(); }
+}
+public class Square extends Shape {
+    private Decimal side;
+    public Square(Decimal side) { this.side = side; }
+    public override Decimal area() { return side * side; }
+}
+
+// Dynamic instantiation by name — handy with custom metadata
+Notifier n = (Notifier) Type.forName('EmailNotifier').newInstance();
+</script>
+<h3>Enums</h3>
+<script type="text/plain" data-lang="apex">
+public enum Severity { LOW, MEDIUM, HIGH }
+Severity s = Severity.HIGH;
+System.debug(s.name() + ' ' + s.ordinal());       // HIGH 2
+Severity parsed = Severity.valueOf('LOW');
+</script>
+
+<h2>Exceptions</h2>
+<script type="text/plain" data-lang="apex">
+public class InvoiceException extends Exception {}   // name must end in Exception
+
+try {
+    insert invoices;
+} catch (DmlException e) {
+    for (Integer i = 0; i < e.getNumDml(); i++) {
+        System.debug(e.getDmlIndex(i) + ': ' + e.getDmlMessage(i) + ' fields ' + e.getDmlFieldNames(i));
+    }
+    throw new InvoiceException('Could not save invoices: ' + e.getDmlMessage(0), e);
+} catch (QueryException e) {
+    // e.g. List has no rows for assignment to SObject
+} catch (Exception e) {
+    System.debug(LoggingLevel.ERROR, e.getTypeName() + ' ' + e.getMessage() + '\n' + e.getStackTraceString());
+} finally {
+    // always runs
+}
+
+// Show an error on a record in a trigger instead of throwing
+acc.addError('Credit limit exceeded');
+acc.Credit_Limit__c.addError('Must be under 1,000,000');
+</script>
+<div class="callout"><b>You can't catch limit exceptions.</b> <code>System.LimitException</code> ends the transaction. Prevent them by bulkifying and checking <code>Limits</code> methods.</div>
+
+<h2>DML</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Statement</th><th>Database method</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>insert recs;</code></td><td><code>Database.insert(recs, allOrNone)</code></td><td>Sets Ids on the records</td></tr>
+<tr><td><code>update recs;</code></td><td><code>Database.update(recs, allOrNone)</code></td><td>Only fields you set are changed</td></tr>
+<tr><td><code>upsert recs Ext_Id__c;</code></td><td><code>Database.upsert(recs, field, allOrNone)</code></td><td>Insert or update by Id or an External ID field</td></tr>
+<tr><td><code>delete recs;</code></td><td><code>Database.delete(recs, allOrNone)</code></td><td>To the Recycle Bin; <code>Database.emptyRecycleBin()</code> to purge</td></tr>
+<tr><td><code>undelete recs;</code></td><td><code>Database.undelete(recs, allOrNone)</code></td><td>Query deleted rows with <code>ALL ROWS</code></td></tr>
+<tr><td><code>merge master dup;</code></td><td><code>Database.merge(master, dups)</code></td><td>Accounts, contacts, leads, cases; up to 3 at once</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex" data-title="Partial success, savepoints, user mode">
+// allOrNone = false: good records save, bad ones report errors
+List<Database.SaveResult> results = Database.insert(contacts, false);
+for (Integer i = 0; i < results.size(); i++) {
+    if (!results[i].isSuccess()) {
+        for (Database.Error err : results[i].getErrors()) {
+            System.debug(contacts[i].LastName + ': ' + err.getStatusCode() + ' ' + err.getMessage());
+        }
+    }
+}
+
+// Upsert by external ID
+Database.UpsertResult[] ur = Database.upsert(accounts, Account.ERP_Id__c, false);
+System.debug(ur[0].isCreated() ? 'inserted' : 'updated');
+
+// Roll back part of a transaction
+Savepoint sp = Database.setSavepoint();
+try {
+    insert order;
+    insert orderLines;
+} catch (DmlException e) {
+    Database.rollback(sp);
+    throw e;
+}
+
+// Enforce the user's permissions on DML
+insert as user newCases;
+Database.update(opps, AccessLevel.USER_MODE);
+</script>
+
+<h2>Strings</h2>
+<script type="text/plain" data-lang="apex">
+String s = '  Hello, World  ';
+s.trim();                          // 'Hello, World'
+s.toLowerCase(); s.toUpperCase();
+s.contains('World');               // true
+s.containsIgnoreCase('world');
+s.startsWith('  He'); s.endsWith('d  ');
+s.indexOf('o');                    // 6
+s.substring(2, 7);                 // 'Hello'
+s.substringAfter(','); s.substringBefore(',');
+s.replace('World', 'Apex');
+s.split(',');                      // List<String>
+String.join(new List<String>{ 'a', 'b' }, ', ');   // 'a, b'
+String.isBlank(s); String.isNotBlank(s);           // null-safe checks
+s.leftPad(20, '*'); s.abbreviate(8);
+String.format('{0} has {1} contacts', new List<Object>{ 'Acme', 3 });
+'it\'s'.length();                  // escape quotes with backslash
+EncodingUtil.urlEncode('a b&c', 'UTF-8');
+Pattern p = Pattern.compile('INV-(\\d+)');
+Matcher m = p.matcher('Ref INV-0042');
+if (m.find()) System.debug(m.group(1));            // '0042'
+</script>
+
+<h2>Dates and times</h2>
+<script type="text/plain" data-lang="apex">
+Date today = Date.today();
+Date nextWeek = today.addDays(7);
+Date eom = today.toStartOfMonth().addMonths(1).addDays(-1);
+Integer days = today.daysBetween(nextWeek);        // 7
+Integer months = today.monthsBetween(Date.newInstance(2027, 6, 1));
+Boolean leap = Date.isLeapYear(2028);
+Date weekStart = today.toStartOfWeek();            // locale-dependent (Sunday in US)
+
+Datetime now = Datetime.now();                      // stored and compared in UTC
+String local = now.format('yyyy-MM-dd HH:mm', 'Europe/London');
+String iso = now.formatGmt('yyyy-MM-dd\'T\'HH:mm:ss\'Z\'');
+Date d = now.date();                                // in the user's time zone
+Date dGmt = now.dateGmt();
+
+// Business hours
+BusinessHours bh = [SELECT Id FROM BusinessHours WHERE IsDefault = true];
+Datetime due = BusinessHours.add(bh.Id, now, 8 * 60 * 60 * 1000L);  // +8 working hours
+</script>
+
+<h2>JSON</h2>
+<script type="text/plain" data-lang="apex">
+// Typed: define classes that mirror the JSON
+public class OrderDto {
+    public String orderNumber;
+    public Decimal total;
+    public List<LineDto> lines;
+}
+public class LineDto { public String sku; public Integer qty; }
+
+OrderDto o = (OrderDto) JSON.deserialize(body, OrderDto.class);
+String out = JSON.serialize(o);                    // or JSON.serializePretty(o)
+
+// Untyped: maps and lists
+Map<String, Object> m = (Map<String, Object>) JSON.deserializeUntyped(body);
+List<Object> lines = (List<Object>) m.get('lines');
+Map<String, Object> firstLine = (Map<String, Object>) lines[0];
+Integer qty = (Integer) firstLine.get('qty');
+
+// Reserved words: rename with a replace before parsing
+String safe = body.replace('"currency":', '"currency_x":');
+
+// Build JSON by hand
+JSONGenerator g = JSON.createGenerator(false);
+g.writeStartObject();
+g.writeStringField('name', 'Acme');
+g.writeNumberField('employees', 250);
+g.writeEndObject();
+String json = g.getAsString();
+</script>
+
+<h2>Useful system classes</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Class</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td><code>UserInfo</code></td><td><code>getUserId()</code>, <code>getProfileId()</code>, <code>getOrganizationId()</code>, <code>getTimeZone()</code>, <code>isMultiCurrencyOrganization()</code></td></tr>
+<tr><td><code>Limits</code></td><td><code>getQueries()</code> / <code>getLimitQueries()</code>, <code>getDmlStatements()</code>, <code>getCpuTime()</code>, <code>getHeapSize()</code></td></tr>
+<tr><td><code>Schema</code></td><td>Describe objects, fields, record types (<a href="data-model.html">Data model</a>)</td></tr>
+<tr><td><code>Messaging</code></td><td>Send email (<code>SingleEmailMessage</code>, templates with <code>setTemplateId</code> and <code>setTargetObjectId</code>)</td></tr>
+<tr><td><code>Crypto</code>, <code>EncodingUtil</code></td><td>Hashes, HMAC signatures, AES, base64, URL encoding</td></tr>
+<tr><td><code>Http</code>, <code>HttpRequest</code>, <code>HttpResponse</code></td><td>Callouts (<a href="integration.html">Integration</a>)</td></tr>
+<tr><td><code>FeatureManagement</code></td><td><code>checkPermission('Custom_Permission')</code></td></tr>
+<tr><td><code>Cache.Org</code>, <code>Cache.Session</code></td><td>Platform Cache get/put</td></tr>
+<tr><td><code>System</code></td><td><code>debug</code>, <code>now</code>, <code>today</code>, <code>runAs</code> (tests), <code>enqueueJob</code>, <code>schedule</code>, <code>Url.getOrgDomainUrl()</code></td></tr>
+</tbody></table></div>
+
+<h2>Anonymous Apex for quick jobs</h2>
+<script type="text/plain" data-lang="apex" data-title="Fix data from the Developer Console">
+// Developer Console → Debug → Open Execute Anonymous Window
+List<Contact> broken = [SELECT Id, Email FROM Contact WHERE Email LIKE '% %' LIMIT 200];
+for (Contact c : broken) c.Email = c.Email.deleteWhitespace();
+update broken;
+System.debug(broken.size() + ' contacts fixed');
+</script>
+<p>Anonymous Apex runs as you, commits on success and counts against limits like any transaction. Run it in a sandbox first.</p>
+</main>
+</body>
+</html>

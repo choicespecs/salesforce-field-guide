@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>APIs &amp; callouts — Salesforce Field Guide</title>
+<meta name="description" content="Salesforce integration in depth: choosing a pattern, OAuth flows with examples, the REST API with curl, Composite and sObject Collections, Bulk API 2.0 step by step, Apex REST services, outbound callouts with Named and External Credentials, retries and error handling.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="integration">
+<main class="content">
+<h1>APIs & callouts</h1>
+<p class="lede">Inbound, other systems call Salesforce's APIs. Outbound, Salesforce calls other systems (callouts) or publishes events they subscribe to (<a href="events.html">Platform Events & CDC</a>).</p>
+
+<h2>Choosing a pattern</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Need</th><th>Pattern</th><th>Tools</th></tr></thead>
+<tbody>
+<tr><td>Another app reads/writes a few records in real time</td><td>Request–reply, inbound</td><td>REST API, Composite API, GraphQL API</td></tr>
+<tr><td>Load or extract thousands to millions of records</td><td>Batch data sync</td><td>Bulk API 2.0, Data Loader, ETL tools</td></tr>
+<tr><td>Custom endpoint with business logic</td><td>Request–reply, inbound</td><td>Apex REST (<code>@RestResource</code>)</td></tr>
+<tr><td>Salesforce needs data from another system right now</td><td>Request–reply, outbound</td><td>Apex callouts, External Services (from Flow)</td></tr>
+<tr><td>Tell other systems something happened</td><td>Fire-and-forget / pub-sub</td><td>Platform Events, Change Data Capture, Pub/Sub API</td></tr>
+<tr><td>Show external data without copying it</td><td>Data virtualisation</td><td>Salesforce Connect (External Objects)</td></tr>
+<tr><td>Many systems, many APIs, governance</td><td>Middleware</td><td>MuleSoft or another integration platform</td></tr>
+</tbody></table></div>
+
+<h2>Authentication for inbound calls</h2>
+<p>External systems authenticate with OAuth 2.0 against an app definition in Salesforce: an <b>External Client App</b> (the current model) or a <b>Connected App</b> (older, still widespread). The app holds the consumer key/secret, allowed flows, scopes, and policies (which users, IP relaxation, token lifetime).</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Flow</th><th>Use when</th></tr></thead>
+<tbody>
+<tr><td>Client Credentials</td><td>Server-to-server; the app runs as a designated "run as" integration user. Simplest for back-end jobs.</td></tr>
+<tr><td>JWT Bearer</td><td>Server-to-server with a certificate; no secret sent. Common in CI (<code>sf org login jwt</code>).</td></tr>
+<tr><td>Web Server (Authorization Code + PKCE)</td><td>An app where a real user logs in and consents.</td></tr>
+<tr><td>Refresh token</td><td>Keep access without re-login after an authorization-code flow.</td></tr>
+<tr><td>Username-password</td><td>Legacy; avoid (blocked by default in new orgs).</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="bash" data-title="Client credentials: get a token">
+curl -s https://acme.my.salesforce.com/services/oauth2/token \
+  -d grant_type=client_credentials \
+  -d client_id="$SF_CLIENT_ID" \
+  -d client_secret="$SF_CLIENT_SECRET"
+# → {"access_token":"00D...!AQ...","instance_url":"https://acme.my.salesforce.com","token_type":"Bearer",...}
+</script>
+<script type="text/plain" data-lang="bash" data-title="JWT bearer with the sf CLI (CI pipelines)">
+# One-time: create a certificate, upload server.crt to the app, pre-authorise the user's profile/permission set
+openssl req -x509 -newkey rsa:2048 -nodes -keyout server.key -out server.crt -days 730 -subj "/CN=ci"
+
+sf org login jwt --client-id "$SF_CLIENT_ID" --jwt-key-file server.key \
+  --username ci-user@acme.com --instance-url https://login.salesforce.com --alias prod
+</script>
+<div class="callout tip"><b>Integration users:</b> give each integration its own user on the free <b>Salesforce Integration</b> licence (API-only), with a permission set granting only what it needs. You can then see, limit and revoke each integration separately.</div>
+
+<h2>REST API</h2>
+<p>Base URL: <code>https://&lt;my-domain&gt;.my.salesforce.com/services/data/vXX.X/</code>. Send <code>Authorization: Bearer &lt;token&gt;</code>. JSON in and out.</p>
+<script type="text/plain" data-lang="bash" data-title="Common REST calls">
+BASE=https://acme.my.salesforce.com/services/data/v64.0
+AUTH="Authorization: Bearer $TOKEN"
+
+# Query (URL-encode the SOQL); follow nextRecordsUrl for more than 2,000 rows
+curl -s -H "$AUTH" "$BASE/query?q=SELECT+Id,Name+FROM+Account+WHERE+Industry='Energy'+LIMIT+10"
+
+# Get one record (optionally choose fields)
+curl -s -H "$AUTH" "$BASE/sobjects/Account/001XXXXXXXXXXXX?fields=Name,Industry"
+
+# Create → 201 {"id":"001...","success":true,"errors":[]}
+curl -s -H "$AUTH" -H "Content-Type: application/json" -X POST "$BASE/sobjects/Account/" \
+  -d '{"Name":"Acme","Industry":"Energy"}'
+
+# Update → 204 No Content
+curl -s -H "$AUTH" -H "Content-Type: application/json" -X PATCH "$BASE/sobjects/Account/001XXXXXXXXXXXX" \
+  -d '{"Rating":"Hot"}'
+
+# Upsert by external ID → 201 created or 200/204 updated
+curl -s -H "$AUTH" -H "Content-Type: application/json" -X PATCH "$BASE/sobjects/Account/ERP_Id__c/ERP-1001" \
+  -d '{"Name":"Acme Ltd"}'
+
+# Delete → 204
+curl -s -H "$AUTH" -X DELETE "$BASE/sobjects/Account/001XXXXXXXXXXXX"
+
+# Metadata about an object (fields, picklists, relationships)
+curl -s -H "$AUTH" "$BASE/sobjects/Account/describe"
+
+# Org limits, including remaining daily API calls
+curl -s -H "$AUTH" "$BASE/limits"
+</script>
+<h3>Composite and sObject Collections</h3>
+<p>Save round trips and API calls by batching:</p>
+<script type="text/plain" data-lang="json" data-title="POST /composite — dependent requests, all-or-none">
+{
+  "allOrNone": true,
+  "compositeRequest": [
+    { "method": "POST", "url": "/services/data/v64.0/sobjects/Account",
+      "referenceId": "newAcct", "body": { "Name": "Acme" } },
+    { "method": "POST", "url": "/services/data/v64.0/sobjects/Contact",
+      "referenceId": "newContact",
+      "body": { "LastName": "Lovelace", "AccountId": "@{newAcct.id}" } },
+    { "method": "GET", "referenceId": "check",
+      "url": "/services/data/v64.0/sobjects/Account/@{newAcct.id}?fields=Name" }
+  ]
+}
+</script>
+<script type="text/plain" data-lang="json" data-title="POST /composite/sobjects — up to 200 records of mixed types">
+{
+  "allOrNone": false,
+  "records": [
+    { "attributes": { "type": "Account" }, "Name": "North" },
+    { "attributes": { "type": "Account" }, "Name": "South" },
+    { "attributes": { "type": "Contact" }, "LastName": "Turing" }
+  ]
+}
+</script>
+<p>Also available: <code>PATCH /composite/sobjects</code> (update), <code>PATCH /composite/sobjects/Account/ERP_Id__c</code> (upsert many by external ID), <code>DELETE /composite/sobjects?ids=…</code>, <code>/composite/tree</code> (parent with nested children), and <code>/composite/graph</code> (several independent all-or-none graphs).</p>
+<h3>Error responses</h3>
+<script type="text/plain" data-lang="json">
+[ { "message": "Required fields are missing: [LastName]",
+    "errorCode": "REQUIRED_FIELD_MISSING",
+    "fields": ["LastName"] } ]
+</script>
+<p>HTTP 400 for bad input, 401 for expired tokens (re-authenticate), 403 for permissions or API disabled, 404 for missing records, 503/<code>REQUEST_LIMIT_EXCEEDED</code> when the org is out of API calls.</p>
+
+<h2>Bulk API 2.0</h2>
+<p>For large volumes: upload CSV, Salesforce processes it asynchronously in parallel batches, you download success and failure files.</p>
+<script type="text/plain" data-lang="bash" data-title="Ingest job: upsert accounts from a CSV">
+# 1. Create the job
+JOB=$(curl -s -H "$AUTH" -H "Content-Type: application/json" -X POST "$BASE/jobs/ingest" \
+  -d '{"object":"Account","operation":"upsert","externalIdFieldName":"ERP_Id__c","contentType":"CSV","lineEnding":"LF"}' \
+  | jq -r .id)
+
+# 2. Upload the data (up to 150 MB per job after base64 encoding)
+curl -s -H "$AUTH" -H "Content-Type: text/csv" -X PUT "$BASE/jobs/ingest/$JOB/batches" --data-binary @accounts.csv
+
+# 3. Tell Salesforce the upload is complete
+curl -s -H "$AUTH" -H "Content-Type: application/json" -X PATCH "$BASE/jobs/ingest/$JOB" -d '{"state":"UploadComplete"}'
+
+# 4. Poll until state is JobComplete (or Failed)
+curl -s -H "$AUTH" "$BASE/jobs/ingest/$JOB" | jq '{state, numberRecordsProcessed, numberRecordsFailed}'
+
+# 5. Results
+curl -s -H "$AUTH" "$BASE/jobs/ingest/$JOB/successfulResults/" > ok.csv
+curl -s -H "$AUTH" "$BASE/jobs/ingest/$JOB/failedResults/" > failed.csv   # includes sf__Error column
+</script>
+<script type="text/plain" data-lang="bash" data-title="Query job: extract many rows">
+QJ=$(curl -s -H "$AUTH" -H "Content-Type: application/json" -X POST "$BASE/jobs/query" \
+  -d '{"operation":"query","query":"SELECT Id, Name, Industry FROM Account"}' | jq -r .id)
+# poll $BASE/jobs/query/$QJ until JobComplete, then page through results:
+curl -s -H "$AUTH" "$BASE/jobs/query/$QJ/results?maxRecords=50000" -D headers.txt > part1.csv
+# repeat with &locator=<Sforce-Locator header value> until the locator is "null"
+</script>
+<p>The CLI wraps this: <code>sf data upsert bulk --sobject Account --file accounts.csv --external-id ERP_Id__c --wait 10</code> and <code>sf data export bulk --query "…" --output-file out.csv --wait 10</code>.</p>
+
+<h2>Apex REST services</h2>
+<p>Expose your own endpoint at <code>/services/apexrest/…</code> when the standard API isn't the right shape.</p>
+<script type="text/plain" data-lang="apex" data-title="OrderApi.cls — GET and POST /services/apexrest/orders/*">
+@RestResource(urlMapping='/orders/*')
+global with sharing class OrderApi {
+
+    global class OrderRequest {
+        public String accountErpId;
+        public List<LineRequest> lines;
+    }
+    global class LineRequest { public String sku; public Integer qty; }
+
+    @HttpGet
+    global static void getOrder() {
+        RestRequest req = RestContext.request;
+        RestResponse res = RestContext.response;
+        String orderNumber = req.requestURI.substringAfterLast('/');
+        List<Order__c> found = [SELECT Id, Name, Status__c, Total__c FROM Order__c
+                                WHERE Name = :orderNumber WITH USER_MODE LIMIT 1];
+        res.addHeader('Content-Type', 'application/json');
+        if (found.isEmpty()) {
+            res.statusCode = 404;
+            res.responseBody = Blob.valueOf('{"error":"Order not found"}');
+            return;
+        }
+        res.responseBody = Blob.valueOf(JSON.serialize(found[0]));
+    }
+
+    @HttpPost
+    global static void createOrder() {
+        RestResponse res = RestContext.response;
+        res.addHeader('Content-Type', 'application/json');
+        try {
+            OrderRequest body = (OrderRequest) JSON.deserialize(
+                RestContext.request.requestBody.toString(), OrderRequest.class);
+            Order__c o = new Order__c(Account__r = new Account(ERP_Id__c = body.accountErpId));
+            insert as user o;
+            res.statusCode = 201;
+            res.responseBody = Blob.valueOf(JSON.serialize(new Map<String, Object>{ 'id' => o.Id }));
+        } catch (JSONException e) {
+            res.statusCode = 400;
+            res.responseBody = Blob.valueOf('{"error":"Invalid JSON"}');
+        } catch (DmlException e) {
+            res.statusCode = 422;
+            res.responseBody = Blob.valueOf(JSON.serialize(new Map<String, String>{ 'error' => e.getDmlMessage(0) }));
+        }
+    }
+}
+</script>
+<script type="text/plain" data-lang="bash">
+curl -s -H "$AUTH" https://acme.my.salesforce.com/services/apexrest/orders/SO-1001
+curl -s -H "$AUTH" -H "Content-Type: application/json" -X POST https://acme.my.salesforce.com/services/apexrest/orders \
+  -d '{"accountErpId":"ERP-1001","lines":[{"sku":"W-1","qty":2}]}'
+</script>
+<p>Test it by setting <code>RestContext.request</code> and <code>RestContext.response</code> in a test method, then calling the static method.</p>
+
+<h2>Outbound callouts</h2>
+<h3>Named and External Credentials</h3>
+<ol>
+<li><b>External Credential</b>: the authentication protocol (OAuth 2.0 client credentials, JWT, custom headers / API key, AWS Signature v4) and its <b>principals</b> (the actual secrets, per-user or shared).</li>
+<li><b>Named Credential</b>: the endpoint URL plus a reference to the External Credential. Code calls <code>callout:Name/path</code>.</li>
+<li>Grant users (including the integration or Automated Process user) access to the External Credential principal via a <b>permission set</b>.</li>
+</ol>
+<p>No secrets or URLs in code, nothing to change in code between sandbox and production, and no Remote Site Settings needed.</p>
+<script type="text/plain" data-lang="apex" data-title="A callout client with error handling">
+public with sharing class BillingClient {
+    public class BillingException extends Exception {}
+
+    public static List<Map<String, Object>> invoicesFor(String customerId) {
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint('callout:Billing_API/v1/invoices?customer=' + EncodingUtil.urlEncode(customerId, 'UTF-8'));
+        req.setMethod('GET');
+        req.setHeader('Accept', 'application/json');
+        req.setTimeout(20000);                       // ms; max 120,000 per callout
+
+        HttpResponse res;
+        try {
+            res = new Http().send(req);
+        } catch (CalloutException e) {               // timeout, DNS, TLS problems
+            throw new BillingException('Billing API unreachable: ' + e.getMessage(), e);
+        }
+
+        Integer code = res.getStatusCode();
+        if (code == 200) {
+            Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+            List<Map<String, Object>> out = new List<Map<String, Object>>();
+            for (Object o : (List<Object>) body.get('invoices')) out.add((Map<String, Object>) o);
+            return out;
+        }
+        if (code == 404) return new List<Map<String, Object>>();
+        throw new BillingException('Billing API returned ' + code + ': ' + res.getBody().abbreviate(500));
+    }
+}
+</script>
+<h3>Callout rules</h3>
+<ul>
+<li><b>No callouts after uncommitted DML</b> in the same transaction (<code>You have uncommitted work pending</code>). Call out first, or move the callout to a Queueable / <code>@future(callout=true)</code> / async flow path.</li>
+<li><b>No synchronous callouts from triggers.</b> Enqueue async work from the trigger instead.</li>
+<li>Up to 100 callouts per transaction and 120 s total; responses up to 6 MB sync / 12 MB async (heap).</li>
+<li><b>Continuations</b> let LWC/Visualforce controllers make long-running callouts without holding a server thread.</li>
+<li>From Flow, use <b>HTTP Callout</b> actions or <b>External Services</b> (register an OpenAPI spec; operations become Flow actions).</li>
+</ul>
+<h3>Retries</h3>
+<script type="text/plain" data-lang="apex" data-title="Retry with backoff using a delayed Queueable">
+public class RetryingSyncJob implements Queueable, Database.AllowsCallouts {
+    private final Id recordId;
+    private final Integer attempt;
+    public RetryingSyncJob(Id recordId, Integer attempt) { this.recordId = recordId; this.attempt = attempt; }
+
+    public void execute(QueueableContext ctx) {
+        HttpResponse res = ErpClient.push(recordId);
+        Integer code = res.getStatusCode();
+        if (code == 429 || code >= 500) {
+            if (attempt < 5) {
+                Integer delayMinutes = Math.min(10, Math.pow(2, attempt).intValue());   // 1, 2, 4, 8, 10
+                System.enqueueJob(new RetryingSyncJob(recordId, attempt + 1), delayMinutes);
+            } else {
+                insert new Integration_Log__c(Record_Id__c = recordId, Message__c = 'Gave up after 5 attempts: ' + code);
+            }
+        }
+    }
+}
+</script>
+
+<h2>Other integration tools</h2>
+<div class="defs">
+<div><b>GraphQL API</b><p><code>POST /services/data/vXX.X/graphql</code> — fetch exactly the fields and related records a client needs in one query. Also available to LWC as a wire adapter.</p></div>
+<div><b>SOAP API</b><p>Older, WSDL-based (Enterprise and Partner WSDLs). Still used by some middleware and Data Loader.</p></div>
+<div><b>Metadata & Tooling APIs</b><p>Deploy and inspect metadata; used by the CLI and IDEs.</p></div>
+<div><b>Outbound Messages</b><p>Legacy SOAP notifications from workflow rules. Prefer platform events or flows with HTTP callouts.</p></div>
+<div><b>Salesforce Connect</b><p>External Objects backed by OData 2.0/4.0, cross-org, or custom Apex adapters. Queried live; count against callout limits.</p></div>
+<div><b>Heroku / AWS / MuleSoft connectors</b><p>Common for heavy processing outside Salesforce.</p></div>
+</div>
+</main>
+</body>
+</html>
