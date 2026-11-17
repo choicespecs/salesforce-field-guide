@@ -35,7 +35,7 @@ const isDark = () => document.documentElement.dataset.theme
 const KW = {
   apex: "abstract|after|before|break|catch|class|continue|delete|do|else|enum|extends|final|finally|for|global|if|implements|insert|instanceof|interface|merge|new|null|override|private|protected|public|return|static|super|switch|this|throw|trigger|try|undelete|update|upsert|virtual|void|when|while|with|without|sharing|inherited|true|false|on|transient",
   js: "async|await|break|case|catch|class|const|continue|default|else|export|extends|false|finally|for|from|function|if|import|let|new|null|return|static|super|switch|this|throw|true|try|undefined|while|get|set",
-  soql: "SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|LIMIT|OFFSET|ORDER|BY|GROUP|HAVING|ASC|DESC|NULLS|FIRST|LAST|WITH|USER_MODE|SYSTEM_MODE|SECURITY_ENFORCED|FOR|UPDATE|VIEW|REFERENCE|TYPEOF|WHEN|THEN|ELSE|END|INCLUDES|EXCLUDES|FIND|IN|RETURNING|ALL|FIELDS|ROWS|COUNT|SUM|AVG|MIN|MAX|COUNT_DISTINCT|ROLLUP|CUBE|TRUE|FALSE|NULL|AS",
+  soql: "SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|LIMIT|OFFSET|ORDER|BY|GROUP|HAVING|ASC|DESC|NULLS|FIRST|LAST|WITH|USER_MODE|SYSTEM_MODE|SECURITY_ENFORCED|FOR|UPDATE|VIEW|REFERENCE|TYPEOF|WHEN|THEN|ELSE|END|INCLUDES|EXCLUDES|FIND|IN|RETURNING|ALL|FIELDS|ROWS|COUNT|SUM|AVG|MIN|MAX|COUNT_DISTINCT|ROLLUP|CUBE|TRUE|FALSE|NULL|AS|USING|SCOPE|SPELL_CORRECTION|SNIPPET|HIGHLIGHT|NETWORK|DIVISION",
 };
 function highlight(text, lang) {
   const out = [];

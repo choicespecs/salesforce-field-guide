@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SOQL &amp; SOSL — Salesforce Field Guide</title>
-<meta name="description" content="SOQL and SOSL reference with examples: filters and operators, relationship queries, semi-joins and anti-joins, aggregates, date literals and functions, polymorphic TYPEOF, FOR UPDATE, ALL ROWS, user mode, dynamic SOQL, and full-text search.">
+<meta name="description" content="In-depth SOQL and SOSL guide with examples: finding API names, filters and operators, sorting and paging, relationship queries, aggregates with GROUP BY and HAVING, security and locking clauses, SOQL and SOSL in Apex, dynamic queries and injection, benchmarking and the Query Plan tool, big objects, and full-text search syntax.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -14,31 +14,83 @@
 <body data-page="soql">
 <main class="content">
 <h1>SOQL & SOSL</h1>
-<p class="lede">SOQL (Salesforce Object Query Language) reads records from one object and its relationships. SOSL (Salesforce Object Search Language) runs full-text search across many objects. Neither supports arbitrary joins or <code>SELECT *</code>.</p>
+<p class="lede">SOQL (Salesforce Object Query Language) reads records from one object and its relationships. SOSL (Salesforce Object Search Language) runs full-text search across many objects at once. Both look a little like SQL, but neither supports arbitrary joins or <code>SELECT *</code>, and both are bound by governor limits.</p>
+
+<h2>SOQL or SOSL?</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Use SOQL when…</th><th>Use SOSL when…</th></tr></thead>
+<tbody>
+<tr><td>You know which object (and field) holds the data</td><td>You don't know which object or field holds the text</td></tr>
+<tr><td>You need exact filters, relationships, aggregates, sorting</td><td>You need word or phrase matching across text, email, phone and name fields</td></tr>
+<tr><td>Results must be complete and current</td><td>Relevance-ranked results are fine (the search index updates asynchronously, so very new records may not appear yet)</td></tr>
+<tr><td>You might need up to 50,000 rows</td><td>2,000 rows total is enough</td></tr>
+<tr><td>Typical uses: triggers, batch jobs, services, related lists</td><td>Typical uses: custom search bars, "find anything" lookups, duplicate hunting by name or phone</td></tr>
+</tbody></table></div>
+<p>Most Apex uses SOQL. SOSL is the tool for search boxes: SOQL's <code>LIKE '%term%'</code> across several fields on several objects is slow and can't use indexes, while SOSL searches a purpose-built index.</p>
 
 <h2>Where you run queries</h2>
 <ul>
-<li><b>Apex</b>: inline in square brackets, <code>[SELECT … ]</code>, or dynamically with <code>Database.query</code>.</li>
-<li><b>Developer Console</b> → Query Editor (tick "Use Tooling API" for metadata like ApexClass).</li>
-<li><b>CLI</b>: <code>sf data query --query "SELECT Id, Name FROM Account LIMIT 5"</code> (add <code>--result-format csv</code> or <code>--bulk</code>).</li>
-<li><b>REST API</b>: <code>GET /services/data/v64.0/query?q=SELECT+Id+FROM+Account</code>.</li>
-<li>VS Code's SOQL Builder, Workbench and other tools.</li>
+<li><b>Apex</b>: inline in square brackets, <code>[SELECT … ]</code>, or dynamically with <code>Database.query</code> / <code>Search.query</code>.</li>
+<li><b>Developer Console</b> → <b>Query Editor</b> tab. Runs SOQL and SOSL; SOSL results show one tab per object. Tick "Use Tooling API" for metadata such as <code>ApexClass</code>. It also hosts the Query Plan tool (see <a href="#the-query-plan-tool">below</a>).</li>
+<li><b>CLI</b>: <code>sf data query --query "SELECT Id, Name FROM Account LIMIT 5"</code> (add <code>--result-format csv</code> or <code>--bulk</code>); <code>sf data search --query "FIND {Acme}"</code> for SOSL.</li>
+<li><b>REST API</b>: <code>GET /services/data/v64.0/query?q=SELECT+Id+FROM+Account</code> and <code>/search?q=FIND+{Acme}</code>.</li>
+<li>VS Code's SOQL Builder, Workbench and other tools. For real development prefer an IDE (VS Code with the Salesforce extensions, or IntelliJ with Illuminated Cloud) over the Developer Console; the console is still handy for quick queries, the Query Plan tool and log timing.</li>
 </ul>
 
-<h2>Syntax</h2>
+<h2>Finding object and field API names</h2>
+<p>Queries use <b>API names</b>, which often differ from the labels users see. A field labelled "Account Name" on Contact is <code>AccountId</code>; a custom object labelled "Invoice Line" might be <code>Invoice_Line__c</code>.</p>
+<ol class="steps">
+<li><div><b>Setup → Object Manager</b> → pick the object. The <b>Details</b> page shows the object's API name.</div></li>
+<li><div><b>Fields &amp; Relationships</b> lists each field's API name in the <b>Field Name</b> column, plus its data type and whether it's <b>Indexed</b>.</div></li>
+<li><div>For lookups and master-detail fields, open the field to see its <b>Child Relationship Name</b> (used in parent-to-child subqueries).</div></li>
+<li><div><b>Schema Builder</b> (Setup → Schema Builder) draws objects as tables with lines for lookups and master-detail relationships. It's the quickest way to understand an unfamiliar org's data model.</div></li>
+</ol>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Suffix</th><th>Meaning</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td>(none)</td><td>Standard object or field</td><td><code>Account</code>, <code>Name</code>, <code>AccountId</code></td></tr>
+<tr><td><code>__c</code></td><td>Custom object or field</td><td><code>Invoice__c</code>, <code>Region__c</code></td></tr>
+<tr><td><code>__r</code></td><td>Custom relationship (traversing a custom lookup)</td><td><code>Invoice__r.Status__c</code></td></tr>
+<tr><td><code>ns__…__c</code></td><td>Field or object from a managed package namespace</td><td><code>acme__Score__c</code></td></tr>
+<tr><td><code>__mdt</code>, <code>__e</code>, <code>__b</code>, <code>__x</code></td><td>Custom metadata type, platform event, big object, external object</td><td><code>Config__mdt</code></td></tr>
+</tbody></table></div>
+<p>In Apex you can also describe objects at runtime: <code>Schema.SObjectType.Account.fields.getMap().keySet()</code> lists every field API name on Account.</p>
+
+<h2>Anatomy of a query</h2>
+<p>At its simplest, a SOQL query names the fields you want and the object they come from:</p>
 <script type="text/plain" data-lang="soql">
-SELECT fieldList [, (subquery)]
+SELECT Id, Name FROM Account
+</script>
+<p>The full grammar, in the order the clauses must appear:</p>
+<script type="text/plain" data-lang="soql">
+SELECT fieldList [, (subquery)] [, TYPEOF …]
 FROM objectType
+[USING SCOPE filterScope]
 [WHERE conditionExpression]
 [WITH USER_MODE | SYSTEM_MODE | SECURITY_ENFORCED]
 [GROUP BY fieldList [HAVING condition]]
 [ORDER BY field [ASC|DESC] [NULLS FIRST|LAST]]
 [LIMIT n] [OFFSET n]
-[FOR UPDATE | FOR VIEW | FOR REFERENCE]
+[FOR VIEW | FOR REFERENCE | FOR UPDATE]
 [ALL ROWS]          -- Apex only: include deleted and archived rows
 </script>
+<ul>
+<li>Keywords are <b>not case-sensitive</b> (<code>select id from account</code> works). Upper-case keywords are just convention.</li>
+<li>String values use <b>single quotes</b>. String comparisons with <code>=</code> and <code>LIKE</code> are case-insensitive.</li>
+<li>There's no <code>SELECT *</code>. List the fields you need, or use <code>FIELDS()</code> sparingly (see <a href="#selecting-all-fields-with-fields">below</a>).</li>
+<li><code>Id</code> is always returned in Apex even if you don't select it, but select it explicitly so readers aren't surprised.</li>
+<li>Accessing a field you didn't query on an sObject throws <code>SObjectException: SObject row was retrieved via SOQL without querying the requested field</code>.</li>
+</ul>
 
-<h2>Filtering</h2>
+<h2>Why filter at all</h2>
+<p>It's tempting to query everything and filter in Apex. It doesn't scale, for three reasons:</p>
+<div class="cols">
+  <div class="panel"><h4>Row limits</h4><p>A transaction can retrieve at most <b>50,000 rows across all its queries</b>, not per query. Unfiltered queries on a growing object hit this quickly.</p></div>
+  <div class="panel"><h4>Selectivity</h4><p>Once an object holds hundreds of thousands of rows, queries without a <a href="#the-query-plan-tool">selective</a> filter on an indexed field fail outright in triggers and can time out elsewhere.</p></div>
+  <div class="panel"><h4>Time</h4><p>Queries are usually the slowest thing in a transaction, and turning rows into sObjects uses CPU time (10 s sync, 60 s async). Fewer rows means faster code.</p></div>
+</div>
+
+<h2>Filtering with WHERE</h2>
 <script type="text/plain" data-lang="soql">
 SELECT Id, Name, AnnualRevenue
 FROM Account
@@ -48,54 +100,169 @@ WHERE Industry = 'Technology'                       -- strings in single quotes
   AND Name LIKE 'Acme%'                             -- % any chars, _ one char; case-insensitive
   AND Rating != null
   AND (Type = 'Customer' OR Type = 'Partner')
-  AND NOT Name LIKE '%test%'
+  AND (NOT Name LIKE '%test%')
   AND Industry NOT IN ('Government')
-  AND IsDeleted = false
+  AND IsActive__c = true                            -- checkboxes: true / false
   AND CreatedDate > 2026-01-01T00:00:00Z            -- datetimes in ISO 8601 UTC
   AND Last_Review__c < 2026-06-30                   -- dates: YYYY-MM-DD
 ORDER BY AnnualRevenue DESC NULLS LAST, Name
 LIMIT 100
 </script>
+
+<h3>Logical operators: AND, OR, NOT</h3>
+<ul>
+<li><code>AND</code>: every condition must be true. Chain as many as you need; each one narrows the result.</li>
+<li><code>OR</code>: at least one condition must be true.</li>
+<li><code>NOT</code>: negates the condition that follows. Rare, but useful with groups.</li>
+<li><b>Use parentheses</b> whenever you mix <code>AND</code> and <code>OR</code>. SOQL rejects ambiguous mixes like <code>A AND B OR C</code> without them.</li>
+</ul>
+<script type="text/plain" data-lang="soql">
+-- Accounts named Taco, OR accounts that are both large AND named GenePoint
+SELECT Id, Name FROM Account
+WHERE Name = 'Taco' OR (AnnualRevenue > 12000 AND Name = 'GenePoint')
+
+-- Accounts named Taco, OR anything that is NOT (large AND named GenePoint)
+SELECT Id, Name FROM Account
+WHERE Name = 'Taco' OR NOT (AnnualRevenue > 12000 AND Name = 'GenePoint')
+</script>
+
+<h3>Comparison operators</h3>
 <div class="tablewrap"><table class="plain">
 <thead><tr><th>Operator</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td><code>= != &lt; &lt;= &gt; &gt;=</code></td><td><code>= null</code> and <code>!= null</code> work (no <code>IS NULL</code>)</td></tr>
-<tr><td><code>LIKE</code></td><td>Text only; <code>%</code> and <code>_</code> wildcards; leading <code>%</code> can't use indexes</td></tr>
-<tr><td><code>IN</code>, <code>NOT IN</code></td><td>Literal list, bind variable, or subquery (semi-join / anti-join)</td></tr>
-<tr><td><code>INCLUDES</code>, <code>EXCLUDES</code></td><td>Multi-select picklists: <code>Interests__c INCLUDES ('Golf;Tennis', 'Sailing')</code> means (Golf AND Tennis) OR Sailing</td></tr>
-<tr><td><code>DISTANCE(…) &lt; n</code></td><td>Geolocation: <code>DISTANCE(Location__c, GEOLOCATION(37.77,-122.41), 'mi') &lt; 20</code></td></tr>
+<tr><td><code>= != &lt; &lt;= &gt; &gt;=</code></td><td><code>= null</code> and <code>!= null</code> work (there's no <code>IS NULL</code>). <code>&lt;&gt;</code> also means not-equal.</td></tr>
+<tr><td><code>LIKE</code></td><td>Text fields only; <code>%</code> = any number of characters, <code>_</code> = exactly one. Case-insensitive. Escape a literal with backslash: <code>'50\%'</code>.</td></tr>
+<tr><td><code>IN</code>, <code>NOT IN</code></td><td>Literal list, Apex bind variable (List or Set), or subquery (semi-join / anti-join)</td></tr>
+<tr><td><code>INCLUDES</code>, <code>EXCLUDES</code></td><td>Multi-select picklists only</td></tr>
+<tr><td><code>DISTANCE(…) &lt; n</code></td><td>Geolocation and address fields: <code>DISTANCE(BillingAddress, GEOLOCATION(37.77,-122.41), 'mi') &lt; 20</code></td></tr>
 </tbody></table></div>
 
-<h2>Relationship queries</h2>
-<h3>Child to parent (dot notation)</h3>
+<h3>LIKE patterns</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Pattern</th><th>Matches</th><th>Doesn't match</th><th>Index-friendly?</th></tr></thead>
+<tbody>
+<tr><td><code>'Taco'</code></td><td>Taco, taco</td><td>Taco Bell</td><td>Yes</td></tr>
+<tr><td><code>'Taco%'</code></td><td>Taco, Taco Bell, Taco Tuesday</td><td>Extra Taco</td><td>Yes (starts-with)</td></tr>
+<tr><td><code>'%Taco'</code></td><td>Taco, Extra Taco</td><td>Taco Bell</td><td>No</td></tr>
+<tr><td><code>'%Taco%'</code></td><td>Taco, Taco Bell, Extra Taco</td><td>Tacky</td><td>No</td></tr>
+<tr><td><code>'Tac_'</code></td><td>Taco, Tack</td><td>Tac, Tacos</td><td>Yes</td></tr>
+</tbody></table></div>
+<p>A leading <code>%</code> forces a scan of every row. On large objects, use SOSL for "contains" searches instead.</p>
+
+<h3>IN and NOT IN</h3>
 <script type="text/plain" data-lang="soql">
-SELECT Id, LastName, Account.Name, Account.Owner.Name, Account.Parent.Name
+SELECT Id, Name FROM Account WHERE BillingState IN ('CA', 'NY')
+SELECT Id, Name FROM Account WHERE Name NOT IN ('Taco', 'Cool Account')
+</script>
+<p><code>IN</code> is the operator you'll use most in Apex, because you usually have a set of Ids or values to look up in bulk (<code>WHERE Id IN :accountIds</code>). See <a href="#soql-in-apex">bind variables</a>.</p>
+
+<h3>Multi-select picklists</h3>
+<p>A multi-select picklist is stored as one string with values separated by semicolons (<code>AAA;BBB</code>). Don't use <code>LIKE</code> on it; use <code>INCLUDES</code> and <code>EXCLUDES</code>:</p>
+<script type="text/plain" data-lang="soql">
+-- (Golf AND Tennis) OR Sailing — semicolon means AND, comma means OR
+SELECT Id FROM Contact WHERE Interests__c INCLUDES ('Golf;Tennis', 'Sailing')
+
+-- Neither Golf nor Tennis selected
+SELECT Id FROM Contact WHERE Interests__c EXCLUDES ('Golf', 'Tennis')
+
+-- Exact match of the whole selection (order matters, so rarely what you want)
+SELECT Id FROM Contact WHERE Interests__c = 'Golf;Tennis'
+</script>
+
+<h3>Fields you can't filter on</h3>
+<ul>
+<li><b>Long text area</b> and <b>rich text area</b> fields can't appear in <code>WHERE</code>, <code>ORDER BY</code> or <code>GROUP BY</code>. Use SOSL to search their contents.</li>
+<li><b>Encrypted fields</b> (Classic encryption, and Shield probabilistic encryption) can't be filtered or sorted. Shield <b>deterministic</b> encryption allows exact-match filters.</li>
+<li><b>Multi-select picklists</b> only support <code>=</code>, <code>!=</code>, <code>INCLUDES</code> and <code>EXCLUDES</code>, and can't be sorted or grouped.</li>
+<li>Most <b>formula fields</b> can be filtered but can't use an index unless Support adds one (deterministic formulas only).</li>
+</ul>
+<p>To check a field in Apex, use its describe: <code>DescribeFieldResult.isFilterable()</code>, <code>isSortable()</code>, <code>isGroupable()</code>.</p>
+
+<h2>Sorting with ORDER BY</h2>
+<script type="text/plain" data-lang="soql">
+SELECT Id, Name FROM Account ORDER BY Name                  -- ascending (A→Z) is the default
+SELECT Id, Name FROM Account ORDER BY Name DESC             -- Z→A
+SELECT Id, Name, AnnualRevenue FROM Account
+ORDER BY AnnualRevenue DESC NULLS LAST, Name ASC            -- several fields, tie-breaker last
+SELECT Id, Name FROM Contact ORDER BY Account.Name          -- sort by a parent field
+</script>
+<ul>
+<li><code>ASC</code> is the default, so you only ever need to write <code>DESC</code>.</li>
+<li>Nulls sort <b>first</b> by default. Add <code>NULLS LAST</code> to push empty values to the end.</li>
+<li>Without <code>ORDER BY</code>, row order is <b>not guaranteed</b>, and can change between runs. Always sort when order matters, especially with <code>LIMIT</code> or <code>OFFSET</code>.</li>
+<li>Sort in the query, not in Apex: it's cheaper, and a component can display the result directly.</li>
+<li>You can sort by up to 32 fields, but not by long text, rich text, multi-select picklist or encrypted fields.</li>
+</ul>
+
+<h2>LIMIT and OFFSET</h2>
+<script type="text/plain" data-lang="soql">
+SELECT Id, Name FROM Account ORDER BY Name LIMIT 200           -- at most 200 rows
+SELECT Id, Name FROM Account ORDER BY Name LIMIT 1             -- just the first match
+SELECT Id, Name FROM Account ORDER BY Name LIMIT 50 OFFSET 100 -- rows 101–150 (page 3 of 50)
+</script>
+<ul>
+<li><code>LIMIT</code> caps the rows a query returns. It doesn't lift the transaction-wide 50,000-row limit, but it stops one query from eating all of it.</li>
+<li><code>OFFSET</code> skips rows, which makes simple pagination for a UI: page <i>n</i> is <code>LIMIT size OFFSET (n-1)*size</code>.</li>
+<li>OFFSET can be at most <b>2,000</b>, can't be used in subqueries (with a few exceptions) and gets slower as it grows.</li>
+</ul>
+<script type="text/plain" data-lang="apex" data-title="Paging past 2,000 rows: keyset pagination">
+// Remember the last Id (or sort key) from the previous page and continue after it
+List<Account> page = [SELECT Id, Name FROM Account
+                      WHERE Id > :lastSeenId
+                      ORDER BY Id
+                      LIMIT 200];
+lastSeenId = page.isEmpty() ? null : page[page.size() - 1].Id;
+</script>
+
+<h2>Relationship queries</h2>
+<p>Objects are linked by <b>lookup</b> and <b>master-detail</b> fields. SOQL can follow those links in both directions. It's less flexible than SQL joins (you can only follow relationships that exist as fields), but it covers most needs.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  C["Contact<br/>(child)"] -- "AccountId lookup<br/>Contact → Account.Name" --> A["Account<br/>(parent)"]
+  A -. "child relationship 'Contacts'<br/>(SELECT … FROM Contacts)" .-> C
+</pre></div>
+
+<h3>Child to parent (dot notation)</h3>
+<p>From the child, follow the lookup with a dot. For a <b>standard</b> lookup, drop the <code>Id</code> suffix (<code>AccountId</code> → <code>Account</code>). For a <b>custom</b> lookup, change <code>__c</code> to <code>__r</code> (<code>Invoice__c</code> → <code>Invoice__r</code>).</p>
+<script type="text/plain" data-lang="soql">
+SELECT Id, FirstName, AccountId,                     -- AccountId: just the 18-char Id
+       Account.Name, Account.AnnualRevenue,          -- fields on the parent
+       Account.Owner.Name, Account.Parent.Name       -- keep walking up
 FROM Contact
-WHERE Account.Industry = 'Healthcare'
+WHERE Account.Name = 'Jambo James'                   -- filter on parent fields too
   AND Account.Owner.IsActive = true
 
--- Custom lookup: use __r
+-- Custom lookups use __r
 SELECT Id, Name, Invoice__r.Status__c, Invoice__r.Account__r.Name
 FROM Invoice_Line__c
+WHERE Invoice__r.Status__c = 'Open'
 </script>
-<p>Up to 5 levels up (<code>A.B.C.D.E.Field</code>), and up to 55 child-to-parent relationships in one query.</p>
+<p>Up to 5 levels up (<code>A.B.C.D.E.Field</code>), and up to 55 child-to-parent relationships in one query. If the lookup is empty, the parent fields come back as <code>null</code> rather than an error, but in Apex <code>c.Account.Name</code> throws a null pointer exception when <code>c.Account</code> is null. Use <code>c.Account?.Name</code>.</p>
+
 <h3>Parent to children (subquery)</h3>
+<p>From the parent, put a subquery in the <code>SELECT</code> list. Its <code>FROM</code> uses the <b>child relationship name</b> from the lookup field's definition, not the child object name. It's usually plural: <code>Contacts</code>, <code>Opportunities</code>, <code>Cases</code>, and custom ones end in <code>__r</code> (<code>Invoices__r</code>). In Object Manager, standard lookups show it near the top of the field page; custom lookups show it further down.</p>
 <script type="text/plain" data-lang="soql">
 SELECT Id, Name,
-       (SELECT Id, LastName, Email FROM Contacts ORDER BY LastName),
-       (SELECT Id, Amount, StageName FROM Opportunities WHERE IsClosed = false),
+       (SELECT Id, FirstName, LastName, Email FROM Contacts ORDER BY LastName),
+       (SELECT Id, Amount, StageName FROM Opportunities WHERE IsClosed = false LIMIT 5),
        (SELECT Id FROM Invoices__r)                  -- custom child relationship
 FROM Account
-WHERE Id IN :accountIds
+WHERE Name = 'Jambo James'
 </script>
-<p>Use the <b>child relationship name</b> (plural: <code>Contacts</code>, <code>Opportunities</code>, <code>Cases</code>, <code>Invoices__r</code>). Up to 20 subqueries per query; nesting up to 5 levels deep in recent API versions.</p>
-<script type="text/plain" data-lang="apex" data-title="Reading subquery results in Apex">
+<p>Each subquery can have its own <code>WHERE</code>, <code>ORDER BY</code> and <code>LIMIT</code>. Up to 20 subqueries per query; nesting up to 5 levels deep in recent API versions. In the Query Editor, child rows appear as a nested JSON-like cell.</p>
+<script type="text/plain" data-lang="apex" data-title="Reading both directions in Apex">
 for (Account a : [SELECT Name, (SELECT LastName FROM Contacts) FROM Account LIMIT 10]) {
-    System.debug(a.Name + ' has ' + a.Contacts.size() + ' contacts');
+    System.debug(a.Name + ' has ' + a.Contacts.size() + ' contacts');   // never null, may be empty
     for (Contact c : a.Contacts) System.debug('  ' + c.LastName);
 }
+for (Contact c : [SELECT LastName, Account.Name FROM Contact LIMIT 10]) {
+    System.debug(c.LastName + ' works at ' + c.Account?.Name);
+}
 </script>
+<div class="callout tip"><b>Large child sets:</b> if a parent might have more than about 200 children, iterate the subquery results inside a SOQL for-loop (<code>for (Account a : [SELECT …, (SELECT … ) FROM Account])</code>), otherwise you can hit <code>QueryException: Aggregate query has too many rows for direct assignment</code>.</div>
+
 <h3>Semi-joins and anti-joins</h3>
+<p>Filter one object by whether related rows exist in another with <code>IN</code> / <code>NOT IN</code> and a subquery that selects a single Id or lookup field.</p>
 <script type="text/plain" data-lang="soql">
 -- Accounts with at least one open case
 SELECT Id, Name FROM Account
@@ -109,34 +276,77 @@ WHERE Id NOT IN (SELECT AccountId FROM Opportunity)
 SELECT Id, Name FROM Contact
 WHERE AccountId IN (SELECT AccountId FROM Opportunity WHERE IsWon = true AND CloseDate = THIS_YEAR)
 </script>
+<p>Rules: at most two semi/anti-join subqueries per query, no nesting them, no <code>OR</code> around them, and the inner query can't use <code>ORDER BY</code> or <code>LIMIT</code>.</p>
 
-<h2>Aggregates</h2>
+<h2>Aggregates, GROUP BY and HAVING</h2>
+<h3>Aggregate functions</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Function</th><th>Returns</th></tr></thead>
+<tbody>
+<tr><td><code>COUNT()</code></td><td>Number of rows (no field, returns an Integer in Apex)</td></tr>
+<tr><td><code>COUNT(field)</code></td><td>Number of rows where the field isn't null</td></tr>
+<tr><td><code>COUNT_DISTINCT(field)</code></td><td>Number of distinct non-null values</td></tr>
+<tr><td><code>SUM(field)</code>, <code>AVG(field)</code></td><td>Total and average of a number or currency field</td></tr>
+<tr><td><code>MIN(field)</code>, <code>MAX(field)</code></td><td>Smallest and largest value (numbers, dates, and also text and picklists)</td></tr>
+</tbody></table></div>
 <script type="text/plain" data-lang="soql">
+SELECT MAX(AnnualRevenue) FROM Account WHERE AnnualRevenue != null    -- one row, one value
+SELECT AVG(AnnualRevenue), COUNT(Id) FROM Account WHERE AnnualRevenue != null
+SELECT COUNT() FROM Case WHERE IsClosed = false
+</script>
+
+<h3>GROUP BY</h3>
+<p><code>GROUP BY</code> splits the rows into groups and runs the aggregates once per group, like the groupings in a summary report. Every selected field that isn't inside an aggregate must be in the <code>GROUP BY</code>.</p>
+<script type="text/plain" data-lang="soql">
+-- Largest account revenue for each account type
+SELECT Type, MAX(AnnualRevenue) maxRevenue
+FROM Account
+WHERE AnnualRevenue != null
+GROUP BY Type
+--  Type               maxRevenue
+--  Customer - Direct  5,600,000,000
+--  Customer - Channel   950,000,000
+
+-- Pipeline by stage this fiscal year
 SELECT StageName, COUNT(Id) deals, SUM(Amount) total, AVG(Amount) avgDeal, MAX(CloseDate) latest
 FROM Opportunity
 WHERE CloseDate = THIS_FISCAL_YEAR
 GROUP BY StageName
-HAVING SUM(Amount) > 100000
 ORDER BY SUM(Amount) DESC
 
--- Distinct count
-SELECT COUNT_DISTINCT(AccountId) FROM Opportunity WHERE IsWon = true
+-- Group by a parent field
+SELECT Account.Industry, COUNT(Id) FROM Opportunity WHERE IsWon = true GROUP BY Account.Industry
 
--- Subtotals
+-- Subtotals and a grand total
 SELECT LeadSource, Rating, COUNT(Id) FROM Lead GROUP BY ROLLUP(LeadSource, Rating)
-
--- Find duplicates
-SELECT Email, COUNT(Id) n FROM Contact WHERE Email != null GROUP BY Email HAVING COUNT(Id) > 1
 </script>
-<script type="text/plain" data-lang="apex" data-title="Aggregates in Apex">
+
+<h3>HAVING</h3>
+<p><code>WHERE</code> filters rows <i>before</i> grouping and can't use aggregates. <code>HAVING</code> filters groups <i>after</i> aggregation.</p>
+<script type="text/plain" data-lang="soql">
+-- Only account types whose biggest account exceeds $950M
+SELECT Type, MAX(AnnualRevenue) FROM Account
+WHERE AnnualRevenue != null
+GROUP BY Type
+HAVING MAX(AnnualRevenue) > 950000000
+
+-- Find duplicate emails
+SELECT Email, COUNT(Id) n FROM Contact
+WHERE Email != null
+GROUP BY Email
+HAVING COUNT(Id) > 1
+</script>
+
+<h3>Aggregates in Apex</h3>
+<script type="text/plain" data-lang="apex">
 for (AggregateResult ar : [SELECT OwnerId, SUM(Amount) amt FROM Opportunity
                            WHERE IsClosed = false GROUP BY OwnerId]) {
     Id owner = (Id) ar.get('OwnerId');
-    Decimal amt = (Decimal) ar.get('amt');      // alias; unaliased are expr0, expr1…
+    Decimal amt = (Decimal) ar.get('amt');      // use the alias; unaliased columns are expr0, expr1…
 }
 Integer openCases = [SELECT COUNT() FROM Case WHERE IsClosed = false];
 </script>
-<p>Aggregate queries still count every row they scan toward the 50,000-row limit, and return at most 2,000 groups.</p>
+<p>Aggregate queries still count every row they scan toward the 50,000-row limit, and return at most 2,000 groups. For larger summaries, use batch Apex or a report.</p>
 
 <h2>Dates</h2>
 <div class="tablewrap"><table class="plain">
@@ -164,13 +374,80 @@ ORDER BY CALENDAR_YEAR(CreatedDate), CALENDAR_MONTH(CreatedDate)
 -- convertTimezone() inside date functions uses the user's time zone instead of UTC
 SELECT HOUR_IN_DAY(convertTimezone(CreatedDate)), COUNT(Id) FROM Case GROUP BY HOUR_IN_DAY(convertTimezone(CreatedDate))
 </script>
+<p>Other date functions: <code>DAY_IN_MONTH</code>, <code>DAY_IN_WEEK</code>, <code>DAY_IN_YEAR</code>, <code>DAY_ONLY</code>, <code>WEEK_IN_YEAR</code>, <code>CALENDAR_QUARTER</code>, <code>FISCAL_MONTH</code>, <code>FISCAL_QUARTER</code>, <code>FISCAL_YEAR</code>.</p>
+
+<h2>Security clauses</h2>
+<p>Apex runs in system mode by default: it ignores the running user's object and field permissions. SOQL has clauses to bring them back.</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Clause</th><th>Checks</th><th>When access is missing</th></tr></thead>
+<tbody>
+<tr><td><code>WITH USER_MODE</code></td><td>Object permissions, field-level security <b>and</b> sharing</td><td>Throws <code>QueryException</code> listing every inaccessible field. Recommended default.</td></tr>
+<tr><td><code>WITH SECURITY_ENFORCED</code></td><td>Object permissions and field-level security on SELECT and FROM only</td><td>Throws on the first inaccessible field. Older; prefer <code>USER_MODE</code>.</td></tr>
+<tr><td><code>WITH SYSTEM_MODE</code></td><td>Nothing (explicit system mode)</td><td>n/a</td></tr>
+<tr><td><code>Security.stripInaccessible()</code></td><td>Field-level security, applied to results in Apex</td><td>Silently removes the fields the user can't see, so the page can still render</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex">
+List<Contact> rows = [SELECT Id, LastName, Phone FROM Contact WITH USER_MODE];
+
+// Strip rather than fail
+SObjectAccessDecision d = Security.stripInaccessible(AccessType.READABLE,
+    [SELECT Id, LastName, Phone FROM Contact]);
+List<Contact> safe = (List<Contact>) d.getRecords();
+</script>
+<p><b>Record-level</b> access (which rows) is controlled by the class's <code>with sharing</code> / <code>without sharing</code> / <code>inherited sharing</code> keyword, or by <code>WITH USER_MODE</code>. See <a href="security.html">Security & sharing</a>.</p>
+
+<h3>USING SCOPE</h3>
+<p><code>USING SCOPE</code> narrows results to a slice of records relative to the running user, the same way list view filters like "My accounts" work. It filters; it doesn't grant or enforce access.</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Scope</th><th>Returns</th></tr></thead>
+<tbody>
+<tr><td><code>mine</code></td><td>Records owned by the running user</td></tr>
+<tr><td><code>mine_and_my_groups</code></td><td>Records owned by the user and by queues the user belongs to</td></tr>
+<tr><td><code>delegated</code></td><td>Records delegated to the user (e.g. tasks assigned to them)</td></tr>
+<tr><td><code>team</code></td><td>Records the user has team (account or opportunity team) access to</td></tr>
+<tr><td><code>my_territory</code>, <code>my_team_territory</code></td><td>Records in the user's territory, or their team's territories (Enterprise Territory Management)</td></tr>
+<tr><td><code>scopingRule</code></td><td>Records matching the user's active scoping rule</td></tr>
+<tr><td><code>everything</code></td><td>All records the user can see (the default)</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="soql">
+SELECT Id, Subject FROM Case USING SCOPE mine_and_my_groups WHERE IsClosed = false
+</script>
+
+<h2>Locking and recently viewed</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Clause</th><th>Effect</th><th>Typical use</th></tr></thead>
+<tbody>
+<tr><td><code>FOR UPDATE</code></td><td>Locks the returned rows until the transaction ends. Other transactions trying to lock them wait up to 10 seconds, then fail.</td><td>Read-modify-write on counters, balances, or anything two users might update at once</td></tr>
+<tr><td><code>FOR VIEW</code></td><td>Updates <code>LastViewedDate</code> and adds the records to the user's recently viewed list</td><td>A custom component that displays a record's details</td></tr>
+<tr><td><code>FOR REFERENCE</code></td><td>Updates <code>LastReferencedDate</code> (and recently viewed)</td><td>Records shown as related references in a custom UI. Rarely used; often paired with <code>FOR VIEW</code> on the main record</td></tr>
+</tbody></table></div>
+<script type="text/plain" data-lang="apex">
+// Lock the wallet so two simultaneous payments can't both read the old balance
+Wallet__c w = [SELECT Id, Balance__c FROM Wallet__c WHERE Id = :walletId FOR UPDATE];
+w.Balance__c -= amount;
+update w;
+
+// A custom record view counts as a "view"
+Account a = [SELECT Id, Name, Industry FROM Account WHERE Id = :recordId FOR VIEW];
+</script>
+<p>A query that uses <code>FOR UPDATE</code> can't use <code>ORDER BY</code>. Lock as few rows as you can, for as short a time as you can.</p>
+
+<h2>Selecting all fields with FIELDS()</h2>
+<p><code>FIELDS()</code> is SOQL's closest thing to <code>SELECT *</code>.</p>
+<script type="text/plain" data-lang="soql">
+SELECT FIELDS(STANDARD) FROM Account                     -- all standard fields; no LIMIT needed
+SELECT FIELDS(CUSTOM) FROM Account LIMIT 200             -- all custom fields
+SELECT FIELDS(ALL) FROM Account LIMIT 50                 -- everything
+SELECT Id, FIELDS(CUSTOM) FROM Invoice__c LIMIT 200      -- mix with named fields
+</script>
+<ul>
+<li><code>FIELDS(ALL)</code> and <code>FIELDS(CUSTOM)</code> need <code>LIMIT 200</code> or less. <code>FIELDS(STANDARD)</code> has no such restriction.</li>
+<li>Use it for exploring data, not in production code: it fetches data you don't need, slows queries, and a new field quietly changes what your code retrieves.</li>
+</ul>
 
 <h2>Other clauses and functions</h2>
 <script type="text/plain" data-lang="soql">
--- All fields (FIELDS(ALL) and FIELDS(CUSTOM) need LIMIT 200 or less)
-SELECT FIELDS(STANDARD) FROM Account LIMIT 10
-
--- Picklist labels and formatted values
+-- Picklist labels (translated with Translation Workbench) and formatted values
 SELECT toLabel(StageName), FORMAT(Amount), convertCurrency(Amount) FROM Opportunity
 
 -- Polymorphic fields: choose fields per type
@@ -186,97 +463,337 @@ FROM Task
 SELECT Id FROM Task WHERE What.Type = 'Opportunity'
 SELECT Id FROM Case WHERE Owner.Type = 'Queue'
 
--- Lock rows for update within this transaction (Apex)
-SELECT Id, Balance__c FROM Wallet__c WHERE Id = :walletId FOR UPDATE
-
--- Include the Recycle Bin (Apex)
+-- Include the Recycle Bin and archived activities (Apex)
 SELECT Id, Name FROM Account WHERE IsDeleted = true ALL ROWS
 
--- Paging (OFFSET max 2,000)
-SELECT Id, Name FROM Account ORDER BY Name LIMIT 50 OFFSET 100
+-- Nearest stores within 20 miles, closest first
+SELECT Id, Name FROM Store__c
+WHERE DISTANCE(Location__c, GEOLOCATION(37.775, -122.418), 'mi') < 20
+ORDER BY DISTANCE(Location__c, GEOLOCATION(37.775, -122.418), 'mi')
+LIMIT 10
 </script>
 
 <h2>SOQL in Apex</h2>
+<p>In Apex, wrap a query in square brackets and assign it. Salesforce generates a typed class for every object (<code>Account</code>, <code>Invoice__c</code>), so there's no connection or mapping code to write.</p>
 <script type="text/plain" data-lang="apex">
-// Bind variables (safe from injection)
-Set<Id> ids = Trigger.newMap.keySet();
-String industry = 'Technology';
-List<Account> accs = [SELECT Id, Name FROM Account WHERE Id IN :ids AND Industry = :industry];
+public with sharing class AccountQueries {
 
-// Bind expressions
+    // Into a List
+    public static List<Account> withRevenue() {
+        return [SELECT Id, Name, AnnualRevenue FROM Account WHERE AnnualRevenue != null];
+    }
+
+    // Straight into a Map keyed by Id
+    public static Map<Id, Account> byId() {
+        return new Map<Id, Account>([SELECT Id, Name FROM Account WHERE AnnualRevenue != null]);
+    }
+}
+</script>
+<p>Run it from <b>Debug → Open Execute Anonymous Window</b> in the Developer Console (or <code>sf apex run</code>) with <code>System.debug(AccountQueries.withRevenue());</code> and check the debug log.</p>
+
+<h3>Bind variables</h3>
+<p>Put a colon before an Apex variable or expression to use it in the query. Binds are type-safe and immune to SOQL injection.</p>
+<script type="text/plain" data-lang="apex">
+Integer minRevenue = 5000;
+List<Account> big = [SELECT Id, Name FROM Account WHERE AnnualRevenue > :minRevenue];
+
+// The most common pattern: a Set or List with IN
+Set<String> accountTypes = new Set<String>{ 'Customer - Direct', 'Customer - Channel' };
+List<Account> customers = [SELECT Id, Name, Type FROM Account WHERE Type IN :accountTypes];
+
+// Ids from trigger context
+List<Contact> cons = [SELECT Id, AccountId FROM Contact WHERE AccountId IN :Trigger.newMap.keySet()];
+
+// Expressions work too
 List<Contact> recent = [SELECT Id FROM Contact WHERE CreatedDate > :Datetime.now().addHours(-1)];
 
-// Single record: throws QueryException if 0 rows (or more than 1)
+// Binds in LIMIT and OFFSET
+Integer pageSize = 50;
+List<Account> page = [SELECT Id FROM Account ORDER BY Name LIMIT :pageSize OFFSET :offset];
+</script>
+
+<h3>Single records, loops and large results</h3>
+<script type="text/plain" data-lang="apex">
+// Assigning to a single sObject throws QueryException if there are 0 rows (or more than 1)
 Account one = [SELECT Id FROM Account WHERE Name = 'Acme' LIMIT 1];
 
 // Safer single record
 List<Account> found = [SELECT Id FROM Account WHERE Name = 'Acme' LIMIT 1];
 Account maybe = found.isEmpty() ? null : found[0];
 
-// Map by Id
-Map<Id, Contact> byId = new Map<Id, Contact>([SELECT Id, Email FROM Contact WHERE AccountId IN :ids]);
-
-// SOQL for-loop: fetches 200 at a time — low heap for large result sets
+// SOQL for-loop: fetches records in chunks of 200 — keeps heap low on big result sets
+for (Contact c : [SELECT Id, Email FROM Contact WHERE Email = null]) { /* one at a time */ }
 for (List<Contact> chunk : [SELECT Id, Email FROM Contact WHERE Email = null]) {
-    // process up to 200 records per iteration
+    // up to 200 records per iteration; good place for a DML on the chunk
 }
 
-// Enforce the user's permissions
-List<Account> visible = [SELECT Id, Name FROM Account WITH USER_MODE];
+// Never query inside a loop — query once, then use a map
+Map<Id, Account> accounts = new Map<Id, Account>(
+    [SELECT Id, Industry FROM Account WHERE Id IN :accountIds]);
+for (Contact c : contacts) {
+    Account parent = accounts.get(c.AccountId);
+}
 </script>
+<div class="callout warn"><b>SOQL inside a loop</b> is the classic way to hit <code>Too many SOQL queries: 101</code>. Each transaction gets 100 queries (200 async). Query once with <code>IN :ids</code> and use a map. See <a href="limits.html">Governor limits</a>.</div>
 
 <h2>Dynamic SOQL</h2>
+<p>Dynamic SOQL builds the query as a string at runtime, for example from custom metadata, a field set, or user-chosen filters, then runs it with the <code>Database</code> class.</p>
 <script type="text/plain" data-lang="apex">
-// Build queries at runtime — e.g. configurable fields or filters
+Set<String> accountTypes = new Set<String>{ 'Customer - Direct', 'Customer - Channel' };
+
+// Bind variables still work inside the string if the variable is in scope
+String queryString = 'SELECT Id, Name FROM Account WHERE Type IN :accountTypes';
+List<Account> accs = Database.query(queryString);
+
+// Preferred: explicit bind map + access level (no reliance on local variable names)
 List<String> fields = new List<String>{ 'Id', 'Name', 'Industry' };
 String soql = 'SELECT ' + String.join(fields, ', ') + ' FROM Account WHERE Industry = :ind LIMIT 50';
-
-// Preferred: explicit bind map + access level
 Map<String, Object> binds = new Map<String, Object>{ 'ind' => userInput };
 List<Account> rows = Database.queryWithBinds(soql, binds, AccessLevel.USER_MODE);
 
-// If you must concatenate user input, escape it
-String safe = String.escapeSingleQuotes(userInput);
-List<SObject> r2 = Database.query('SELECT Id FROM Account WHERE Name LIKE \'%' + safe + '%\'');
-
-// Validate object/field names against describe before using them
-Boolean ok = Schema.getGlobalDescribe().containsKey(objectName.toLowerCase());
+// Counts and cursors
 Integer total = Database.countQuery('SELECT COUNT() FROM Account');
+Database.QueryLocator ql = Database.getQueryLocator('SELECT Id FROM Account');   // for batch Apex
 </script>
-<div class="callout warn"><b>SOQL injection</b> is the most common security review failure. Never concatenate raw user input into a query string. Use binds; whitelist object and field names.</div>
+<div class="callout"><b>Trade-off:</b> fields and objects referenced only inside query strings are invisible to Salesforce's dependency tracking. "Where is this used?" won't list them, and the platform won't stop an admin deleting a field your dynamic query needs. The query then fails at runtime. Prefer static SOQL when the shape is fixed.</div>
 
-<h2>SOSL</h2>
-<script type="text/plain" data-lang="sosl">
-FIND {Acme*} IN NAME FIELDS
-RETURNING Account(Id, Name, Industry WHERE Industry != null ORDER BY Name LIMIT 10),
-          Contact(Id, Name, Email),
-          Lead(Id, Name, Company)
-LIMIT 50
+<h2>SOQL and SOSL injection</h2>
+<p>Injection happens when user input is concatenated into a query string, letting a crafted value change the query's logic, for example to read records or fields the user shouldn't see.</p>
+<script type="text/plain" data-lang="apex">
+// VULNERABLE: input of  x' OR Name != '  returns every account
+String q = 'SELECT Id FROM Account WHERE Name = \'' + userInput + '\'';
+
+// SAFE: bind variable (static or dynamic)
+List<Account> a1 = [SELECT Id FROM Account WHERE Name = :userInput];
+List<Account> a2 = Database.queryWithBinds('SELECT Id FROM Account WHERE Name = :n',
+                       new Map<String, Object>{ 'n' => userInput }, AccessLevel.USER_MODE);
+
+// If you must concatenate, escape the value
+String safe = String.escapeSingleQuotes(userInput);
+List<SObject> r = Database.query('SELECT Id FROM Account WHERE Name LIKE \'%' + safe + '%\'');
+
+// Object and field names can't be bound — whitelist them against describe
+Map<String, Schema.SObjectField> fieldMap = Schema.SObjectType.Account.fields.getMap();
+if (!fieldMap.containsKey(sortField.toLowerCase())) throw new IllegalArgumentException('Bad field');
 </script>
+<ul>
+<li>Bind variables are always safe; escaping is for values you <b>concatenate</b>.</li>
+<li>The same applies to SOSL: bind the search term, or escape it before building a <code>Search.query</code> string.</li>
+<li>Treat anything from an LWC, Visualforce page, URL parameter or API call as untrusted. Injection is one of the most common AppExchange security review failures.</li>
+</ul>
+
+<h2>Measuring query cost</h2>
+<p>The database work for a query isn't counted as Apex CPU time, but turning the returned rows into sObjects is, and for large result sets that's significant. Measure rather than guess.</p>
+<script type="text/plain" data-lang="apex" data-title="Benchmark with Limits.getCpuTime()">
+public static void benchmark() {
+    System.debug('CPU before query: ' + Limits.getCpuTime() + ' ms');
+    List<Account> accs = [SELECT Id, Name FROM Account];
+    System.debug('CPU after query:  ' + Limits.getCpuTime() + ' ms');
+    for (Account a : accs) a.Name = 'Bob';
+    System.debug('CPU after loop:   ' + Limits.getCpuTime() + ' ms');
+    System.debug('Rows: ' + Limits.getQueryRows() + ' / ' + Limits.getLimitQueryRows());
+}
+// Example run, ~2,450 accounts:   5 ms → 32 ms → 78 ms
+// Same code with WHERE Name = 'Taco':  query cost dropped from ~27 ms to ~8 ms
+</script>
+<p>For a visual breakdown, open the log in the Developer Console and choose <b>Debug → View Log Panels → Execution Overview</b> (or <b>Switch Perspective → Analysis</b>). The timeline shows each SOQL statement, how long it took, and the line it ran from. <code>Limits.getQueries()</code> and <code>Limits.getQueryRows()</code> show how much of each limit you've used.</p>
+
+<h2>The Query Plan tool</h2>
+<p>On large objects, a query must be <b>selective</b>: its filters must narrow the rows enough for the optimiser to use an index. When an object grows past a few hundred thousand rows, non-selective queries that used to work start failing (<code>System.QueryException: Non-selective query against large object type</code> in triggers) or timing out. The Query Plan tool shows how Salesforce would run a query before that happens.</p>
+<ol class="steps">
+<li><div>In the Developer Console, <b>Help → Preferences → Enable Query Plan</b>. A <b>Query Plan</b> button appears in the Query Editor.</div></li>
+<li><div>Type the query (it isn't run) and click <b>Query Plan</b>.</div></li>
+<li><div>Read the <b>top row</b>: that's the plan the optimiser will choose. Its <b>Cost</b> should be <b>below 1</b>.</div></li>
+<li><div>If it's a <b>TableScan</b> or cost is 1 or more, add or change a filter on an indexed field and re-check.</div></li>
+</ol>
 <div class="tablewrap"><table class="plain">
-<thead><tr><th>Part</th><th>Options</th></tr></thead>
+<thead><tr><th>Column</th><th>Meaning</th></tr></thead>
 <tbody>
-<tr><td><code>FIND {term}</code></td><td>Wildcards <code>*</code> (any chars) and <code>?</code> (one char); operators <code>AND</code>, <code>OR</code>, <code>AND NOT</code>; quoted phrases <code>{"big deal"}</code></td></tr>
-<tr><td><code>IN … FIELDS</code></td><td><code>ALL FIELDS</code> (default), <code>NAME FIELDS</code>, <code>EMAIL FIELDS</code>, <code>PHONE FIELDS</code>, <code>SIDEBAR FIELDS</code></td></tr>
-<tr><td><code>RETURNING</code></td><td>Objects with fields, WHERE, ORDER BY, LIMIT per object</td></tr>
-<tr><td><code>WITH</code></td><td><code>WITH DIVISION</code>, <code>WITH SNIPPET</code> (Knowledge), <code>WITH NETWORK</code></td></tr>
+<tr><td>Cardinality</td><td>Estimated rows this plan returns</td></tr>
+<tr><td>Fields</td><td>The indexed field(s) the plan uses (blank for a table scan)</td></tr>
+<tr><td>Leading Operation Type</td><td><b>Index</b>: uses a custom or standard index. <b>Other</b>: uses an internal Salesforce optimisation (often on standard indexed fields). <b>Sharing</b>: uses the user's sharing tables. <b>TableScan</b>: reads every row; the one to avoid.</td></tr>
+<tr><td>Cost</td><td>Cost relative to the selectivity threshold. Under 1 is selective; 1 or more means it will become a table scan.</td></tr>
+<tr><td>sObject Cardinality</td><td>Approximate number of rows in the object</td></tr>
+<tr><td>sObject Type</td><td>The object being queried</td></tr>
 </tbody></table></div>
-<script type="text/plain" data-lang="apex" data-title="SOSL in Apex">
-String term = 'acme';
-List<List<SObject>> results = [FIND :term IN ALL FIELDS
-                               RETURNING Account(Id, Name), Contact(Id, Name, Email)];
-List<Account> accounts = (List<Account>) results[0];
-List<Contact> contacts = (List<Contact>) results[1];
-
-// Dynamic
-List<List<SObject>> r = Search.query('FIND \'' + String.escapeSingleQuotes(term) + '*\' RETURNING Lead(Id)');
+<script type="text/plain" data-lang="soql" data-title="Same object, different plans (≈2,450 accounts)">
+SELECT Id, Name FROM Account                       -- TableScan, cost ≈ 2.8  ✗
+SELECT Id, Name FROM Account WHERE Name = 'Taco'   -- Other (Name index), cost ≈ 0.004  ✓
+SELECT Id, Name FROM Account WHERE Name LIKE '%Taco%'  -- leading wildcard: TableScan  ✗
 </script>
-<div class="tablewrap"><table>
-<thead><tr><th>Use SOQL when…</th><th>Use SOSL when…</th></tr></thead>
+<ul>
+<li>Indexed fields show a tick in the <b>Indexed</b> column in Object Manager → Fields &amp; Relationships. Standard indexes include <code>Id</code>, <code>Name</code>, <code>OwnerId</code>, <code>CreatedDate</code>, <code>SystemModstamp</code>, <code>RecordTypeId</code>, and lookup/master-detail fields; custom fields marked <b>External ID</b> or <b>Unique</b> are indexed too.</li>
+<li>Selectivity thresholds, what defeats an index (<code>!=</code>, leading <code>%</code>, <code>= null</code>, non-selective <code>OR</code> branches) and large-data techniques are in <a href="limits.html#selective-queries-and-indexes">Governor limits → Selective queries and indexes</a>.</li>
+<li>Salesforce's <b>Query &amp; Search Optimization Cheat Sheet</b> summarises the thresholds and exceptions on one page; keep it handy when designing queries against big tables.</li>
+<li>The Query Plan is also available through the REST API: <code>/services/data/v64.0/query/?explain=SELECT+…</code>.</li>
+</ul>
+
+<h2>Big objects and very large queries</h2>
+<p><b>Big objects</b> (<code>__b</code>) store billions of rows for archives and history. SOQL against them is heavily restricted, because they're queried only through their defined index.</p>
+<ul>
+<li>Filter on the index fields <b>in the order they're defined</b>, starting from the first, with no gaps.</li>
+<li>Use <code>=</code> on every index field except the last one you filter on, which can use a range (<code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>) or <code>IN</code>. Only one <code>IN</code> per query.</li>
+<li>Not supported: <code>!=</code>, <code>LIKE</code>, <code>NOT IN</code>, <code>INCLUDES</code>, <code>EXCLUDES</code>, aggregate functions, <code>GROUP BY</code>, <code>HAVING</code>, <code>OFFSET</code>.</li>
+<li>Don't select <code>Id</code>: big object rows return an empty placeholder Id.</li>
+</ul>
+<script type="text/plain" data-lang="soql">
+-- Index defined as (Account__c, Event_Date__c)
+SELECT Account__c, Event_Date__c, Detail__c
+FROM Customer_Event__b
+WHERE Account__c = '001XXXXXXXXXXXX'
+  AND Event_Date__c > 2026-01-01T00:00:00Z
+</script>
+<p><b>Async SOQL</b>, which once ran long queries over big objects via a REST API and wrote results to another object, has been <b>retired</b>. For queries beyond normal limits, use:</p>
+<ul>
+<li><b>Batch Apex</b> with <code>Database.getQueryLocator</code>: iterates up to 50 million rows in chunks.</li>
+<li><b>Bulk API 2.0 query jobs</b> (<code>sf data query --bulk</code>) for large extracts.</li>
+<li><b>Apex cursors</b> (<code>Database.getCursor</code>) to page through up to 50 million rows across queueable jobs.</li>
+</ul>
+
+<h2>SOSL basics</h2>
+<p>A SOSL query has three main parts: what to look for, where to look, and what to return.</p>
+<script type="text/plain" data-lang="sosl">
+FIND {Taco}                                      -- the search term(s), in curly braces
+IN NAME FIELDS                                   -- which group of fields to search
+RETURNING Account(Id, Name), Contact(Id, FirstName, LastName)   -- objects and fields to return
+</script>
+<p>Read it as: "find <i>Taco</i> in any name field, and give me back matching accounts with their Id and Name, and matching contacts with their Id, first and last name." The Query Editor shows one results tab per object. Matching works on whole words and is more forgiving than <code>=</code>: <code>{Taco}</code> finds "Taco Bell" and "Extra Taco", and a contact whose <i>last</i> name is Taco.</p>
+<script type="text/plain" data-lang="sosl" data-title="Full syntax">
+FIND {searchQuery}
+[IN ALL FIELDS | NAME FIELDS | EMAIL FIELDS | PHONE FIELDS | SIDEBAR FIELDS]
+[RETURNING objectType[(fieldList [WHERE …] [ORDER BY …] [LIMIT n] [OFFSET n] [USING ListView=name])] [, …]]
+[WITH DIVISION = '…'] [WITH DATA CATEGORY …] [WITH SNIPPET[(target_length=n)]]
+[WITH NETWORK IN ('…')] [WITH PricebookId = '…'] [WITH HIGHLIGHT] [WITH METADATA = 'LABELS']
+[WITH SPELL_CORRECTION = true|false]
+[LIMIT n]
+[UPDATE TRACKING | UPDATE VIEWSTAT]
+</script>
+
+<h3>The search term (FIND)</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Syntax</th><th>Meaning</th><th>Example</th></tr></thead>
 <tbody>
-<tr><td>You know the object and field</td><td>You don't know which object or field holds the text</td></tr>
-<tr><td>You need exact filters, relationships, aggregates</td><td>You need word/phrase matching across text, email, phone fields</td></tr>
-<tr><td>Results must be complete</td><td>Relevance-ranked results are fine (search index is updated asynchronously, so very new records may not appear)</td></tr>
+<tr><td><code>*</code></td><td>Any number of characters, in the middle or at the end of a word (SOSL's version of <code>%</code>)</td><td><code>{Tac*}</code> → Taco, Tacos, Tackle</td></tr>
+<tr><td><code>?</code></td><td>Exactly one character (SOSL's version of <code>_</code>)</td><td><code>{T?co}</code> → Taco, Tico</td></tr>
+<tr><td><code>"…"</code></td><td>Exact phrase, words in that order</td><td><code>{"Taco Bell"}</code></td></tr>
+<tr><td><code>AND</code>, <code>OR</code></td><td>Both terms / either term</td><td><code>{Taco OR Burrito}</code></td></tr>
+<tr><td><code>AND NOT</code></td><td>First term but not the second</td><td><code>{Tacos AND NOT Batchable}</code></td></tr>
+<tr><td><code>( )</code></td><td>Grouping</td><td><code>{(Taco OR Tacos) AND Batchable}</code></td></tr>
+</tbody></table></div>
+<ul>
+<li>A plain single term is matched loosely: the engine uses word stemming, so <code>{Taco}</code> can also match "Tacos". Wildcards, quotes and boolean operators make matching stricter: once you write <code>{Taco OR Batch}</code>, each term must match a whole word, so "Tacos" may no longer match. If results shrink unexpectedly, list the variants (<code>{Taco OR Tacos}</code>) or add <code>*</code>.</li>
+<li>Terms need at least two characters (wildcard searches more). The search is case-insensitive.</li>
+<li>Escape reserved characters with a backslash: <code>? &amp; | ! { } [ ] ( ) ^ ~ * : \ " ' + -</code>.</li>
+<li>In Apex inline SOSL, the term is in <b>single quotes</b> instead of braces: <code>FIND 'Taco*'</code>.</li>
+</ul>
+
+<h3>Search groups (IN … FIELDS)</h3>
+<p>Unlike SOQL, you don't name individual fields to search. You pick one predefined group:</p>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Group</th><th>Searches</th></tr></thead>
+<tbody>
+<tr><td><code>ALL FIELDS</code></td><td>Every searchable text field (the default). Includes long text areas, which SOQL can't filter.</td></tr>
+<tr><td><code>NAME FIELDS</code></td><td>Name-type fields on each object (Account Name, Contact first/last name, Case Subject, etc.)</td></tr>
+<tr><td><code>EMAIL FIELDS</code></td><td>Email fields only</td></tr>
+<tr><td><code>PHONE FIELDS</code></td><td>Phone fields only, with phone-number normalisation</td></tr>
+<tr><td><code>SIDEBAR FIELDS</code></td><td>The fields the classic sidebar search used: a narrower, faster set of key fields per object</td></tr>
+</tbody></table></div>
+
+<h3>RETURNING</h3>
+<p>Each object in <code>RETURNING</code> takes what is essentially a mini SOQL query in parentheses, without <code>SELECT</code> or <code>FROM</code>:</p>
+<script type="text/plain" data-lang="sosl">
+FIND {Taco*} IN ALL FIELDS
+RETURNING
+  Account(Id, Name, AnnualRevenue WHERE AnnualRevenue != null ORDER BY Name LIMIT 100),
+  Contact(Id, FirstName, LastName, Email WHERE Email != null),
+  Lead(Id, Name, Company USING ListView = My_Open_Leads),
+  Opportunity(Id, Name, toLabel(StageName), convertCurrency(Amount))
+LIMIT 200
+</script>
+<ul>
+<li>Order inside the parentheses: fields, then <code>WHERE</code>, then <code>ORDER BY</code>, then <code>LIMIT</code>, then <code>OFFSET</code>.</li>
+<li><code>OFFSET</code> is allowed only when <code>RETURNING</code> lists a <b>single</b> object.</li>
+<li>Without a field list, only the record Ids come back.</li>
+<li><code>USING ListView=…</code> restricts an object's results to records in that list view.</li>
+<li><code>toLabel()</code> returns translated picklist values when Translation Workbench is on.</li>
+<li>The overall <code>LIMIT</code> applies across all objects; the per-object limits apply within each one.</li>
+</ul>
+
+<h3>WITH options</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Clause</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td><code>WITH SPELL_CORRECTION = false</code></td><td>Spell correction is <b>on</b> by default (a misspelled term still matches likely words). Turn it off for exact codes or IDs.</td></tr>
+<tr><td><code>WITH SNIPPET</code></td><td>Returns highlighted text excerpts for Knowledge articles and feed items</td></tr>
+<tr><td><code>WITH HIGHLIGHT</code></td><td>Wraps matched terms in <code>&lt;mark&gt;</code> tags in the returned field values</td></tr>
+<tr><td><code>WITH NETWORK</code></td><td>Limits results to one or more Experience Cloud sites</td></tr>
+<tr><td><code>WITH DATA CATEGORY</code></td><td>Filters Knowledge articles and questions by data category</td></tr>
+<tr><td><code>WITH DIVISION</code></td><td>Filters by division in orgs that use divisions</td></tr>
+<tr><td><code>WITH PricebookId</code></td><td>Filters products by price book</td></tr>
+<tr><td><code>WITH METADATA = 'LABELS'</code></td><td>Includes field labels in the response (API)</td></tr>
+</tbody></table></div>
+
+<h2>SOSL in Apex</h2>
+<p>Because SOSL can return several object types at once, the result is a <b>list of lists</b>: one inner list per object, in the same order as the <code>RETURNING</code> clause.</p>
+<script type="text/plain" data-lang="apex">
+public with sharing class SearchService {
+
+    public static void search(String searchTerm) {
+        List<List<SObject>> results = [
+            FIND :searchTerm IN ALL FIELDS
+            RETURNING Account(Id, Name), Contact(Id, FirstName, LastName)
+        ];
+
+        // Option 1: cast each inner list by position
+        List<Account> accounts = (List<Account>) results[0];
+        List<Contact> contacts = (List<Contact>) results[1];
+
+        // Option 2: walk every result generically
+        for (List<SObject> objectList : results) {
+            for (SObject record : objectList) {
+                System.debug(record.getSObjectType() + ': ' + record.get('Id'));
+            }
+        }
+    }
+}
+</script>
+<ul>
+<li>Inline: <code>FIND 'Taco*'</code> with a literal, or <code>FIND :term</code> with a bind variable (wildcards can be part of the bound string).</li>
+<li>An inner list is empty, not null, when an object has no matches.</li>
+<li>In tests, SOSL returns nothing unless you call <code>Test.setFixedSearchResults(ids)</code> first. See <a href="testing.html">Testing Apex</a>.</li>
+</ul>
+
+<h3>Dynamic SOSL</h3>
+<script type="text/plain" data-lang="apex">
+String term = String.escapeSingleQuotes(userInput);
+String queryString = 'FIND \'' + term + '*\' IN ALL FIELDS '
+                   + 'RETURNING Account(Id, Name), Contact(Id, FirstName, LastName)';
+List<List<SObject>> results = Search.query(queryString);
+
+// With access level
+List<List<SObject>> mine = Search.query(queryString, AccessLevel.USER_MODE);
+
+// Search.find returns a richer Search.SearchResults (snippets, highlights)
+Search.SearchResults sr = Search.find('FIND \'' + term + '\' IN ALL FIELDS RETURNING KnowledgeArticleVersion(Id, Title) WITH SNIPPET');
+</script>
+
+<h2>Limits quick reference</h2>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Limit</th><th>Value</th></tr></thead>
+<tbody>
+<tr><td>SOQL queries per transaction</td><td>100 sync / 200 async</td></tr>
+<tr><td>Rows retrieved by SOQL per transaction</td><td>50,000 (all queries combined)</td></tr>
+<tr><td>SOSL searches per transaction</td><td>20</td></tr>
+<tr><td>Rows returned by one SOSL search</td><td>2,000</td></tr>
+<tr><td>Rows from <code>Database.getQueryLocator</code> (batch Apex)</td><td>50 million</td></tr>
+<tr><td>OFFSET maximum</td><td>2,000</td></tr>
+<tr><td>Aggregate query groups returned</td><td>2,000</td></tr>
+<tr><td><code>FIELDS(ALL)</code> / <code>FIELDS(CUSTOM)</code> row limit</td><td>200</td></tr>
+<tr><td>Child-to-parent relationships / levels</td><td>55 / 5</td></tr>
+<tr><td>Parent-to-child subqueries per query</td><td>20</td></tr>
+<tr><td>SOQL statement length</td><td>100,000 characters (default)</td></tr>
+<tr><td>Apex CPU time</td><td>10 s sync / 60 s async</td></tr>
+<tr><td><code>FOR UPDATE</code> lock wait</td><td>10 s, then <code>QueryException</code></td></tr>
 </tbody></table></div>
 
 <h2>Useful queries for admins and developers</h2>
@@ -298,6 +815,9 @@ SELECT UserId, LoginTime, Status, SourceIp, Application FROM LoginHistory ORDER 
 
 -- Field changes on an opportunity
 SELECT Field, OldValue, NewValue, CreatedBy.Name, CreatedDate FROM OpportunityFieldHistory WHERE OpportunityId = '006XXXXXXXXXXXX'
+
+-- Which fields on an object are indexed
+SELECT QualifiedApiName, DataType, IsIndexed FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = 'Account'
 </script>
 </main>
 </body>
